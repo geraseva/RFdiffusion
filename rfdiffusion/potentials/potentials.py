@@ -1,6 +1,8 @@
 import torch
 import numpy as np 
 from rfdiffusion.util import generate_Cbeta
+from rfdiffusion.util_module import ComputeAllAtomCoords
+from rfdiffusion.util import get_torsions, torsion_indices, torsion_can_flip, reference_angles
 
 class Potential:
     '''
@@ -453,6 +455,43 @@ class substrate_contacts(Potential):
             rand_idx = torch.multinomial(idx, 1).long()
             self.motif_frame = xyz[rand_idx[0],:4]
             self.motif_mapping = [(rand_idx, i) for i in range(4)]
+    
+class dmasif_interactions(Potential):
+
+    '''
+        Differentiable way to optinize binding and non-binding surface
+    '''
+
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='protein_mpnn'):
+
+        dmasif_path='/home/domain/data/geraseva'
+        import sys
+
+        sys.path.append(dmasif_path)
+        from masif_martini.rfdiff_potential import Potential_from_bb
+
+        self.potential=Potential_from_bb(binderlen=binderlen, 
+                                          int_weight=int_weight, 
+                                          non_int_weight=non_int_weight, 
+                                          threshold=threshold, 
+                                          seq_model_type=seq_model_type)
+
+        self.allatom=ComputeAllAtomCoords()
+
+    def compute(self, xyz):
+
+        seq=torch.full((1,xyz.shape[0]),21)
+        alpha, _, alpha_mask, _ = get_torsions(xyz[None,:,:,:], seq, 
+                                                    torsion_indices, 
+                                                    torsion_can_flip, 
+                                                    reference_angles)
+        alpha_mask = torch.logical_and(alpha_mask, ~torch.isnan(alpha[...,0]))
+        alpha[torch.isnan(alpha)] = 0.0
+        alpha = torch.cat((alpha, alpha_mask[:,:,:,None]), dim=-1)
+
+        _, xyz=self.allatom(seq, xyz[None,:,:,:], alpha)
+
+        return self.potential(xyz.squeeze())
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
@@ -464,12 +503,14 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'interface_ncontacts':  interface_ncontacts,
                            'monomer_contacts':     monomer_contacts,
                            'olig_contacts':        olig_contacts,
-                           'substrate_contacts':    substrate_contacts}
+                           'substrate_contacts':    substrate_contacts,
+                           'dmasif_interactions':   dmasif_interactions}
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',
                            'binder_any_ReLU',
                            'dimer_ROG',
                            'binder_ncontacts',
-                           'interface_ncontacts'}
+                           'interface_ncontacts',
+                           'dmasif_interactions'}
 

@@ -6,6 +6,7 @@ schedules/
 
 examples/
 outputs/
+test_outputs/
 
 tests/.results.json
 tests/input_pdbs
