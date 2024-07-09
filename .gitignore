@@ -4,7 +4,7 @@ rfdiffusion.egg-info
 models/
 schedules/
 
-examples/ppi_scaffolds
+examples/
 
 tests/.results.json
 tests/input_pdbs
