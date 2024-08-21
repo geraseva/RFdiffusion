@@ -462,11 +462,10 @@ class dmasif_interactions(Potential):
         Differentiable way to optinize binding and non-binding surface
     '''
 
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='protein_mpnn'):
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='ligand_mpnn'):
 
         dmasif_path='/home/domain/data/geraseva'
         import sys
-
         sys.path.append(dmasif_path)
         from masif_martini.rfdiff_potential import Potential_from_bb
 
@@ -479,17 +478,6 @@ class dmasif_interactions(Potential):
         self.allatom=ComputeAllAtomCoords()
 
     def compute(self, xyz):
-
-        seq=torch.full((1,xyz.shape[0]),21)
-        alpha, _, alpha_mask, _ = get_torsions(xyz[None,:,:,:], seq, 
-                                                    torsion_indices, 
-                                                    torsion_can_flip, 
-                                                    reference_angles)
-        alpha_mask = torch.logical_and(alpha_mask, ~torch.isnan(alpha[...,0]))
-        alpha[torch.isnan(alpha)] = 0.0
-        alpha = torch.cat((alpha, alpha_mask[:,:,:,None]), dim=-1)
-
-        _, xyz=self.allatom(seq, xyz[None,:,:,:], alpha)
 
         return self.potential(xyz.squeeze())
 
