@@ -464,9 +464,10 @@ class dmasif_interactions(Potential):
 
     def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='ligand_mpnn'):
 
-        dmasif_path='/home/domain/data/geraseva'
+        submodule_path='/'.join(__file__.split('/')[:-3])+'/submodules/'
         import sys
-        sys.path.append(dmasif_path)
+        sys.path.append(submodule_path)
+
         from masif_martini.rfdiff_potential import Potential_from_bb
 
         self.potential=Potential_from_bb(binderlen=binderlen, 
@@ -479,7 +480,7 @@ class dmasif_interactions(Potential):
 
     def compute(self, xyz):
 
-        return self.potential(xyz.squeeze())
+        return self.potential(xyz.squeeze()).to('cpu')
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
