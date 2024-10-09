@@ -38,6 +38,7 @@ def make_deterministic(seed=0):
 @hydra.main(version_base=None, config_path="../config/inference", config_name="base")
 def main(conf: HydraConfig) -> None:
     log = logging.getLogger(__name__)
+
     if conf.inference.deterministic:
         make_deterministic()
 
