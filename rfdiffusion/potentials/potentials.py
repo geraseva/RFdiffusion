@@ -464,7 +464,7 @@ class dmasif_interactions(Potential):
 
     def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='ligand_mpnn'):
 
-        submodule_path='/'.join(__file__.split('/')[:-3])+'/submodules/'
+        submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
         sys.path.append(submodule_path)
 
