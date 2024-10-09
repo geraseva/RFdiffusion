@@ -462,7 +462,7 @@ class dmasif_interactions(Potential):
         Differentiable way to optinize binding and non-binding surface
     '''
 
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='ligand_mpnn'):
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='protein_mpnn'):
 
         submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
