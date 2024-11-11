@@ -484,6 +484,9 @@ class Denoise:
         grad_ca = self.get_potential_gradients(
             xt.clone(), diffusion_mask=diffusion_mask
         )
+        # clamp gradients
+        dist=(grad_ca**2).sum(-1, keepdim=True).sqrt()
+        grad_ca=torch.where(dist<=1/self.alphabar_schedule[t-1], grad_ca, grad_ca/dist/self.alphabar_schedule[t-1]).detach()
 
         ca_deltas += self.potential_manager.get_guide_scale(t) * grad_ca
 
