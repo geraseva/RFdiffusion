@@ -453,6 +453,15 @@ class Denoise:
         if not fix_motif:
             diffusion_mask[:] = False
 
+        grad_ca = self.get_potential_gradients(
+            px0.clone(), diffusion_mask=diffusion_mask
+        )
+        # clamp gradients
+        dist=(grad_ca**2).sum(-1, keepdim=True).sqrt()
+        grad_ca=torch.where(dist<=1/self.alphabar_schedule[t-1], grad_ca, grad_ca/dist/self.alphabar_schedule[t-1]).detach()
+
+        px0 += self.potential_manager.get_guide_scale(t) * grad_ca[:, None, :]
+
         # get the next set of CA coordinates
         noise_scale_ca = self.noise_schedule_ca(t)
         _, ca_deltas = get_next_ca(
@@ -480,7 +489,7 @@ class Denoise:
 
         # Apply gradient step from guiding potentials
         # This can be moved to below where the full atom representation is calculated to allow for potentials involving sidechains
-
+        '''
         grad_ca = self.get_potential_gradients(
             xt.clone(), diffusion_mask=diffusion_mask
         )
@@ -489,7 +498,7 @@ class Denoise:
         grad_ca=torch.where(dist<=1/self.alphabar_schedule[t-1], grad_ca, grad_ca/dist/self.alphabar_schedule[t-1]).detach()
 
         ca_deltas += self.potential_manager.get_guide_scale(t) * grad_ca
-
+        '''
         # add the delta to the new frames
         frames_next = torch.from_numpy(frames_next) + ca_deltas[:, None, :]  # translate
 
