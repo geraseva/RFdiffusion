@@ -8,6 +8,9 @@ class Potential:
     '''
         Interface class that defines the functions a potential must implement
     '''
+    def __init__(self):
+
+        self.predicted=False
 
     def compute(self, xyz):
         '''
@@ -31,7 +34,7 @@ class monomer_ROG(Potential):
     '''
 
     def __init__(self, weight=1, min_dist=15):
-
+        super().__init__()
         self.weight   = weight
         self.min_dist = min_dist
 
@@ -57,6 +60,7 @@ class binder_ROG(Potential):
 
     def __init__(self, binderlen, weight=1, min_dist=15):
 
+        super().__init__()
         self.binderlen = binderlen
         self.min_dist  = min_dist
         self.weight    = weight
@@ -87,6 +91,7 @@ class dimer_ROG(Potential):
 
     def __init__(self, binderlen, weight=1, min_dist=15):
 
+        super().__init__()
         self.binderlen = binderlen
         self.min_dist  = min_dist
         self.weight    = weight
@@ -127,6 +132,7 @@ class binder_ncontacts(Potential):
 
     def __init__(self, binderlen, weight=1, r_0=8, d_0=4):
 
+        super().__init__()
         self.binderlen = binderlen
         self.r_0       = r_0
         self.weight    = weight
@@ -161,6 +167,7 @@ class interface_ncontacts(Potential):
 
     def __init__(self, binderlen, weight=1, r_0=8, d_0=6):
 
+        super().__init__()
         self.binderlen = binderlen
         self.r_0       = r_0
         self.weight    = weight
@@ -200,6 +207,7 @@ class monomer_contacts(Potential):
 
     def __init__(self, weight=1, r_0=8, d_0=2, eps=1e-6):
 
+        super().__init__()
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
@@ -245,6 +253,7 @@ class olig_contacts(Potential):
 
             weight (int/float, optional): Scaling/weighting factor
         """
+        super().__init__()
         self.contact_matrix = contact_matrix
         self.weight_intra = weight_intra 
         self.weight_inter = weight_inter 
@@ -354,6 +363,7 @@ class substrate_contacts(Potential):
 
     def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1):
 
+        super().__init__()
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
@@ -464,13 +474,16 @@ class dmasif_interactions(Potential):
 
     def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='protein_mpnn'):
 
+        super().__init__()
+        self.predicted=True
+
         submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
         sys.path.append(submodule_path)
 
-        from masif_martini.rfdiff_potential import Potential_from_bb
+        from masif_martini.potential import RFdiff_potential_from_bb
 
-        self.potential=Potential_from_bb(binderlen=binderlen, 
+        self.potential=RFdiff_potential_from_bb(binderlen=binderlen, 
                                           int_weight=int_weight, 
                                           non_int_weight=non_int_weight, 
                                           threshold=threshold, 

@@ -360,7 +360,7 @@ class Denoise:
         px0_[~atom_mask] = float("nan")
         return torch.Tensor(px0_)
 
-    def get_potential_gradients(self, xyz, diffusion_mask):
+    def get_potential_gradients(self, xyz, diffusion_mask, t, predicted=False):
         """
         This could be moved into potential manager if desired - NRB
 
@@ -375,7 +375,8 @@ class Denoise:
             Ca_grads (torch.tensor): [L,3] The gradient at each Ca atom
         """
 
-        if self.potential_manager == None or self.potential_manager.is_empty():
+        if (self.potential_manager == None or 
+            sum([potential.predicted==predicted for potential in self.potential_manager.potentials_to_apply])<1):
             return torch.zeros(xyz.shape[0], 3)
 
         use_Cb = False
@@ -386,7 +387,7 @@ class Denoise:
         if not xyz.grad is None:
             xyz.grad.zero_()
 
-        current_potential = self.potential_manager.compute_all_potentials(xyz)
+        current_potential = self.potential_manager.compute_all_potentials(xyz, predicted)
         current_potential.backward()
 
         # Since we are not moving frames, Cb grads are same as Ca grads
@@ -395,6 +396,10 @@ class Denoise:
 
         if not diffusion_mask == None:
             Ca_grads[diffusion_mask, :] = 0
+        
+        # clamp gradients
+        dist=(Ca_grads**2).sum(-1, keepdim=True).sqrt()
+        Ca_grads=torch.where(dist<=1/self.alphabar_schedule[t-1], Ca_grads, Ca_grads/dist/self.alphabar_schedule[t-1]).detach()
 
         # check for NaN's
         if torch.isnan(Ca_grads).any():
@@ -452,16 +457,7 @@ class Denoise:
         # Now done with diffusion mask. if fix motif is False, just set diffusion mask to be all True, and all coordinates can diffuse
         if not fix_motif:
             diffusion_mask[:] = False
-
-        grad_ca = self.get_potential_gradients(
-            px0.clone(), diffusion_mask=diffusion_mask
-        )
-        # clamp gradients
-        dist=(grad_ca**2).sum(-1, keepdim=True).sqrt()
-        grad_ca=torch.where(dist<=1/self.alphabar_schedule[t-1], grad_ca, grad_ca/dist/self.alphabar_schedule[t-1]).detach()
-
-        px0 += self.potential_manager.get_guide_scale(t) * grad_ca[:, None, :]
-
+        
         # get the next set of CA coordinates
         noise_scale_ca = self.noise_schedule_ca(t)
         _, ca_deltas = get_next_ca(
@@ -489,16 +485,16 @@ class Denoise:
 
         # Apply gradient step from guiding potentials
         # This can be moved to below where the full atom representation is calculated to allow for potentials involving sidechains
-        '''
+        
         grad_ca = self.get_potential_gradients(
-            xt.clone(), diffusion_mask=diffusion_mask
+            xt.clone(), diffusion_mask=diffusion_mask, t=t
+        ) + self.get_potential_gradients(
+            px0.clone(), diffusion_mask=diffusion_mask,
+            t=t, predicted=True
         )
-        # clamp gradients
-        dist=(grad_ca**2).sum(-1, keepdim=True).sqrt()
-        grad_ca=torch.where(dist<=1/self.alphabar_schedule[t-1], grad_ca, grad_ca/dist/self.alphabar_schedule[t-1]).detach()
-
+        
         ca_deltas += self.potential_manager.get_guide_scale(t) * grad_ca
-        '''
+        
         # add the delta to the new frames
         frames_next = torch.from_numpy(frames_next) + ca_deltas[:, None, :]  # translate
 
