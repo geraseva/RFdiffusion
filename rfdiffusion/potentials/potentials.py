@@ -472,7 +472,8 @@ class dmasif_interactions(Potential):
         Differentiable way to optinize binding and non-binding surface
     '''
 
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='protein_mpnn'):
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, 
+                 pos_threshold=3, neg_threshold=5, seq_model_type='protein_mpnn'):
 
         super().__init__()
         self.predicted=True
@@ -486,7 +487,8 @@ class dmasif_interactions(Potential):
         self.potential=RFdiff_potential_from_bb(binderlen=binderlen, 
                                           int_weight=int_weight, 
                                           non_int_weight=non_int_weight, 
-                                          threshold=threshold, 
+                                          pos_threshold=pos_threshold, 
+                                          neg_threshold=neg_threshold, 
                                           seq_model_type=seq_model_type)
 
         self.allatom=ComputeAllAtomCoords()
