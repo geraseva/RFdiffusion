@@ -385,6 +385,17 @@ class Sampler:
         self.state_prev = None
 
         #########################################
+        ### Parse seq for potentials using sidechains ###
+        #########################################
+
+        if self.potential_conf.guiding_potentials is not None:
+            if True: #any(list(filter(lambda x: "sidechain" in x, self.potential_conf.guiding_potentials))):
+                for pot in self.potential_manager.potentials_to_apply:
+                    pot.seq = seq_t
+                    pot.mask_seq = self.mask_seq
+
+
+        #########################################
         ### Parse ligand for ligand potential ###
         #########################################
 

@@ -389,7 +389,7 @@ class substrate_contacts(Potential):
         # This operates on self.xyz_motif, which is assigned to this class in the model runner (for horrible plumbing reasons)
         self._grab_motif_residues(self.xyz_motif)
         
-        # for checking affine transformation is corect
+        # for checking affine transformation is correct
         first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
 
         # grab the coordinates of the corresponding atoms in the new frame using mapping
@@ -472,30 +472,44 @@ class dmasif_interactions(Potential):
         Differentiable way to optinize binding and non-binding surface
     '''
 
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, 
-                 pos_threshold=3, neg_threshold=5, seq_model_type='protein_mpnn'):
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, disable=False,
+                 pos_threshold=3, neg_threshold=3, seq_model_type='protein_mpnn'):
 
         super().__init__()
-        self.predicted=True
+
+        self.disable=disable
 
         submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
         sys.path.append(submodule_path)
+       
+        from rfdiffusion.recover_sidechains import GetMartiniSidechains
 
-        from masif_martini.potential import RFdiff_potential_from_bb
+        self.get_sidechains=GetMartiniSidechains(binderlen=binderlen, 
+                                                 seq_model_type=seq_model_type)
 
-        self.potential=RFdiff_potential_from_bb(binderlen=binderlen, 
-                                          int_weight=int_weight, 
-                                          non_int_weight=non_int_weight, 
-                                          pos_threshold=pos_threshold, 
-                                          neg_threshold=neg_threshold, 
-                                          seq_model_type=seq_model_type)
+        from masif_martini.potential import dmasif_potential
+
+        self.potential=dmasif_potential(binderlen=binderlen, 
+                                        int_weight=int_weight, 
+                                        non_int_weight=non_int_weight, 
+                                        pos_threshold=pos_threshold, 
+                                        neg_threshold=neg_threshold)
 
         self.allatom=ComputeAllAtomCoords()
 
     def compute(self, xyz):
 
-        return self.potential(xyz.squeeze()).to('cpu')
+        d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+
+        potential=self.potential(d)
+
+        if self.disable:
+            potential.detach_()
+            potential.requires_grad_()
+            xyz.grad=torch.zeros_like(xyz)
+                   
+        return potential
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
