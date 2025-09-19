@@ -6,7 +6,7 @@ import numpy as np
 import pickle
 
 
-from rfdiffusion.chemical import num2aa, aa2num, aa_123
+from rfdiffusion.chemical import num2aa, aa2num, aa_123, seq2chars
 from rfdiffusion.util import rigid_from_3_points
 
 def nsplit(*x):
@@ -212,6 +212,10 @@ class GetMartiniSidechains:
 
     def __init__(self, binderlen=-1, seq_model_type='protein_mpnn'):
 
+        submodule_path='/'.join(__file__.split('/')[:-3])
+        import sys
+        sys.path.append(submodule_path)
+
         import LigandMPNN
         from LigandMPNN.model_utils import ProteinMPNN
         from LigandMPNN.data_utils import restype_str_to_int, restype_1to3, alphabet
@@ -311,6 +315,7 @@ class GetMartiniSidechains:
         probs=torch.nn.functional.softmax(output_dict['logits'], dim=-1)
         probs=probs[0,:,self.renumber_aa_mpnn2rf]
         probs[seq_mask.squeeze()]=seq[seq_mask.squeeze()]
+        print(f'ProteinMPNN prediction: { seq2chars(torch.argmax(probs, dim=-1).tolist())}')
         return probs.contiguous()
 
     def bb2martini(self, xyz, seq):

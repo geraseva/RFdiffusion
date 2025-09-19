@@ -411,8 +411,8 @@ class Sampler:
         #########################################
 
         if self.potential_conf.guiding_potentials is not None:
-            if True: #any(list(filter(lambda x: "sidechain" in x, self.potential_conf.guiding_potentials))):
-                for pot in self.potential_manager.potentials_to_apply:
+            for pot in self.potential_manager.potentials_to_apply:
+                if pot.sidechain:
                     pot.seq = seq_t
                     pot.mask_seq = self.mask_seq
 
@@ -422,7 +422,7 @@ class Sampler:
         #########################################
 
         if self.potential_conf.guiding_potentials is not None:
-            if any(list(filter(lambda x: "substrate_contacts" in x, self.potential_conf.guiding_potentials))):
+            if any(list(filter(lambda x: "substrate" in x, self.potential_conf.guiding_potentials))):
                 assert len(self.target_feats['xyz_het']) > 0, "If you're using the Substrate Contact potential, \
                         you need to make sure there's a ligand in the input_pdb file!"
                 het_names = np.array([i['name'].strip() for i in self.target_feats['info_het']])

@@ -414,6 +414,45 @@ def writepdb(
                     ctr += 1
 
 
+def writeligand(
+    filename, atoms, info, name, bfacts=None):
+    with open(filename, "a") as f:
+        ctr = 1
+        info = [x for x in info if x['name'].strip()==name]
+        atomscpu = atoms.cpu().squeeze()
+        assert len(info)==len(atomscpu)
+        if bfacts is None:
+            bfacts = torch.zeros(atomscpu.shape[0])
+        idx_pdb = 1
+
+        Bfacts = torch.clamp(bfacts.cpu(), 0, 1)
+        for i in range(len(atomscpu)):
+            chain = "L"
+            f.write(
+                    "%-6s%5s %4s %3s %s%4d    %8.3f%8.3f%8.3f%6.2f%6.2f\n"
+                    % (
+                        "ATOM",
+                        ctr,
+                        info[i]['atom_id'],
+                        name,
+                        chain,
+                        idx_pdb,
+                        atomscpu[i, 0],
+                        atomscpu[i, 1],
+                        atomscpu[i, 2],
+                        1.0,
+                        Bfacts[i],
+                    )
+            )
+            ctr += 1
+
+def writeligandmulti(
+    filename, atoms, info, name, bfacts=None):
+    for i in range(len(atoms)):
+        writeligand(filename, atoms[i], info, name, bfacts)            
+        with open(filename, "a") as f:
+            f.write("ENDMDL\n")
+
 # resolve tip atom indices
 tip_indices = torch.full((22,), 0)
 for i in range(22):

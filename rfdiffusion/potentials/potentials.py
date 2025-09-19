@@ -11,6 +11,8 @@ class Potential:
     def __init__(self):
 
         self.predicted=False
+        self.sidechain=False
+        self.current_substrate_atoms=None
 
     def compute(self, xyz):
         '''
@@ -165,24 +167,37 @@ class interface_ncontacts(Potential):
     '''
 
 
-    def __init__(self, binderlen, weight=1, r_0=8, d_0=6):
+    def __init__(self, binderlen, weight=1, r_0=8, d_0=6, sidechain=False):
 
         super().__init__()
         self.binderlen = binderlen
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
+        self.sidechain=sidechain
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=binderlen, 
+                                                     seq_model_type='protein_mpnn')
 
     def compute(self, xyz):
 
-        # Extract binder Ca residues
-        Ca_b = xyz[:self.binderlen,1] # [Lb,3]
+        if self.sidechain:
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                                d['atom_xyz_p2'][None].contiguous(), p=2) #  # [1,Lb,Lt]
+        else:
+            # Extract binder Ca residues
+            Ca_b = xyz[:self.binderlen,1] # [Lb,3]
+            # Extract target Ca residues
+            Ca_t = xyz[self.binderlen:,1] # [Lt,3]
+            #cdist needs a batch dimension - NRB
+            dgram = torch.cdist(Ca_b[None,...].contiguous(), Ca_t[None,...].contiguous(), p=2) # [1,Lb,Lt]
 
-        # Extract target Ca residues
-        Ca_t = xyz[self.binderlen:,1] # [Lt,3]
-
-        #cdist needs a batch dimension - NRB
-        dgram = torch.cdist(Ca_b[None,...].contiguous(), Ca_t[None,...].contiguous(), p=2) # [1,Lb,Lt]
         divide_by_r_0 = (dgram - self.d_0) / self.r_0
         numerator = torch.pow(divide_by_r_0,6)
         denominator = torch.pow(divide_by_r_0,12)
@@ -361,19 +376,21 @@ class substrate_contacts(Potential):
     Implicitly models a ligand with an attractive-repulsive potential.
     '''
 
-    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1):
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, sidechain=False):
 
         super().__init__()
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
         self.eps       = eps
+        self.sidechain=sidechain
         
         # motif frame coordinates
         # NOTE: these probably need to be set after sample_init() call, because the motif sequence position in design must be known
         self.motif_frame = None # [4,3] xyz coordinates from 4 atoms of input motif
         self.motif_mapping = None # list of tuples giving positions of above atoms in design [(resi, atom_idx)]
         self.motif_substrate_atoms = None # xyz coordinates of substrate from input motif
+        self.current_substrate_atoms = None
         r_min = 2
         self.energies = []
         self.energies.append(lambda dgram: s * contact_energy(torch.min(dgram, dim=-1)[0], d_0, r_0))
@@ -382,37 +399,57 @@ class substrate_contacts(Potential):
         else:
             self.energies.append(lambda dgram: poly_repulse(dgram, rep_r_0, rep_s, p=1.5))
 
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=-1, 
+                                                     seq_model_type='protein_mpnn')
 
     def compute(self, xyz):
         
-        # First, get random set of atoms
-        # This operates on self.xyz_motif, which is assigned to this class in the model runner (for horrible plumbing reasons)
-        self._grab_motif_residues(self.xyz_motif)
+        if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
+            substrate_atoms=(self.motif_substrate_atoms-self.motif_substrate_atoms.mean(dim=0)).detach()
+            
+        else:
+            # First, get random set of atoms
+            # This operates on self.xyz_motif, which is assigned to this class in the model runner (for horrible plumbing reasons)
+            self._grab_motif_residues(self.xyz_motif)
         
-        # for checking affine transformation is correct
-        first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
+            # for checking affine transformation is correct
+            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
 
-        # grab the coordinates of the corresponding atoms in the new frame using mapping
-        res = torch.tensor([k[0] for k in self.motif_mapping])
-        atoms = torch.tensor([k[1] for k in self.motif_mapping])
-        new_frame = xyz[self.diffusion_mask][res,atoms,:]
-        # calculate affine transformation matrix and translation vector b/w new frame and motif frame
-        A, t = self._recover_affine(self.motif_frame, new_frame)
-        # apply affine transformation to substrate atoms
-        substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
-        second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
-        assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
-        diffusion_mask = mask_expand(self.diffusion_mask, 1)
-        Ca = xyz[~diffusion_mask, 1]
-
-        #cdist needs a batch dimension - NRB
-        dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
+            # grab the coordinates of the corresponding atoms in the new frame using mapping
+            res = torch.tensor([k[0] for k in self.motif_mapping])
+            atoms = torch.tensor([k[1] for k in self.motif_mapping])
+            new_frame = xyz[self.diffusion_mask][res,atoms,:]
+            # calculate affine transformation matrix and translation vector b/w new frame and motif frame
+            A, t = self._recover_affine(self.motif_frame, new_frame)
+            # apply affine transformation to substrate atoms
+            substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
+            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
+            assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
+        
+        if self.sidechain:
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                            substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
+        else:
+            diffusion_mask = mask_expand(self.diffusion_mask, 1)
+            Ca = xyz[~diffusion_mask, 1]
+            #cdist needs a batch dimension - NRB
+            dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
 
         all_energies = []
         for i, energy_fn in enumerate(self.energies):
             energy = energy_fn(dgram)
             all_energies.append(energy.sum())
-        return - self.weight * sum(all_energies)
+        self.current_substrate_atoms = substrate_atoms.clone().detach()
+        energy = sum(all_energies)
+        print('SUBSTRATE CONTACT LOSS:',energy.item())
+        return self.weight * energy
 
         #Potential value is the average of both radii of gyration (is avg. the best way to do this?)
         return self.weight * ncontacts.sum()
@@ -478,6 +515,8 @@ class dmasif_interactions(Potential):
         super().__init__()
 
         self.disable=disable
+        self.predicted=False # seems to be better
+        self.sidechain=True
 
         submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
