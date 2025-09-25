@@ -21,7 +21,7 @@ import torch
 from omegaconf import OmegaConf
 import hydra
 import logging
-from rfdiffusion.util import writepdb_multi, writepdb, writeligand, writeligandmulti
+from rfdiffusion.util import writepdb_multi, writepdb, writeligand, writena
 from rfdiffusion.inference import utils as iu
 from hydra.core.hydra_config import HydraConfig
 import numpy as np
@@ -88,6 +88,7 @@ def main(conf: HydraConfig) -> None:
         seq_stack = []
         plddt_stack = []
         ligand_stack = []
+        na_stack = []
 
         x_t = torch.clone(x_init)
         seq_t = torch.clone(seq_init)
@@ -105,6 +106,8 @@ def main(conf: HydraConfig) -> None:
                 for pot in sampler.potential_manager.potentials_to_apply:
                     if pot.current_substrate_atoms is not None:
                         ligand_stack.append(pot.current_substrate_atoms)
+                    if pot.current_na_atoms is not None:
+                        na_stack.append(pot.current_na_atoms)
 
         # Flip order for better visualization in pymol
         denoised_xyz_stack = torch.stack(denoised_xyz_stack)
@@ -154,7 +157,10 @@ def main(conf: HydraConfig) -> None:
                         ligand_stack[0],
                         sampler.target_feats['info_het'],
                         sampler._conf.potentials.substrate)
-
+        if len(na_stack)>0:
+            writena(f"{out_prefix}_na.pdb",
+                        na_stack[0],
+                        sampler.target_feats['info_na'])
         # run metadata
         trb = dict(
             config=OmegaConf.to_container(sampler._conf, resolve=True),

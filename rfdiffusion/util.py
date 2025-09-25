@@ -414,6 +414,46 @@ def writepdb(
                     ctr += 1
 
 
+# write NA to file
+def writena(
+    filename, atoms, info,  bfacts=None):
+    f = open(filename, "w")
+    ctr = 1
+    atomscpu = atoms.cpu().squeeze()
+    if bfacts is None:
+        bfacts = torch.zeros(atomscpu.shape[0])
+    if idx_pdb is None:
+        idx_pdb = 1 + torch.arange(atomscpu.shape[0])
+
+    Bfacts = torch.clamp(bfacts.cpu(), 0, 1)
+    for i, s in enumerate(info['pdb_idx']):
+        chain=s[0]
+        idx_pdb=s[1]
+        s=info['seq'][i]
+        for j, atm_j in enumerate(info['atom_names'][i]):
+            if (
+                j < sum(info['mask'][i]) and atm_j is not None
+            ):  # and not torch.isnan(atomscpu[i,j,:]).any()):
+                f.write(
+                    "%-6s%5s %4s %3s %s%4d    %8.3f%8.3f%8.3f%6.2f%6.2f\n"
+                    % (
+                        "ATOM",
+                        ctr,
+                        atm_j,
+                        num2na[s],
+                        chain,
+                        idx_pdb,
+                        atomscpu[i, j, 0],
+                        atomscpu[i, j, 1],
+                        atomscpu[i, j, 2],
+                        1.0,
+                        Bfacts[i],
+                    )
+                )
+                ctr += 1
+    f.close()
+
+
 def writeligand(
     filename, atoms, info, name, bfacts=None):
     with open(filename, "a") as f:

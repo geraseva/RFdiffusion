@@ -531,7 +531,7 @@ def parse_pdb(filename, **kwargs):
     return parse_pdb_lines(lines, **kwargs)
 
 
-def parse_pdb_lines(lines, parse_hetatom=False, ignore_het_h=True):
+def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=True):
     # indices of residues observed in the structure
     res, pdb_idx = [],[]
     for l in lines:
@@ -614,13 +614,77 @@ def parse_pdb_lines(lines, parse_hetatom=False, ignore_het_h=True):
 
         out["xyz_het"] = np.array(xyz_het)
         out["info_het"] = info_het
+    
+    # nucleic acids
+    if parse_na:
+        res, pdb_idx = [],[]
+        for l in lines:
+            if l[:4] == "ATOM" and l[12:16].strip() == "C1'":
+                res.append((l[22:26], l[17:20]))
+                # chain letter, res num
+                pdb_idx.append((l[21:22].strip(), int(l[22:26].strip())))
+        seq = [util.na2num[r[1]] if r[1] in util.na2num.keys() else 20 for r in res]
+        pdb_idx = [
+            (l[21:22].strip(), int(l[22:26].strip()))
+            for l in lines
+            if l[:4] == "ATOM" and l[12:16].strip() == "C1'"
+        ]  # chain letter, res num
+
+        # 4 BB + up to 10 SC atoms
+        xyz = np.full((len(res), 23, 3), np.nan, dtype=np.float32)
+        xyz_names = np.full((len(res), 23, 3), np.nan)
+        for l in lines:
+            if l[:4] != "ATOM":
+                continue
+            chain, resNo, atom, aa = (
+                l[21:22],
+                int(l[22:26]),
+                " " + l[12:16].strip().ljust(3),
+                l[17:20],
+            )
+            if (chain,resNo) in pdb_idx:
+                idx = pdb_idx.index((chain, resNo))
+                for i_atm, tgtatm in enumerate(
+                    util.na2long[util.na2num[aa]][:14]
+                    ):
+                    if (
+                        tgtatm is not None and tgtatm.strip() == atom.strip()
+                        ):  # ignore whitespace
+                        xyz[idx, i_atm, :] = [float(l[30:38]), float(l[38:46]), float(l[46:54])]
+                        xyz_names[idx, i_atm, :] = l[16:20]
+                        break
+
+        # save atom mask
+        mask = np.logical_not(np.isnan(xyz[..., 0]))
+        xyz[np.isnan(xyz[..., 0])] = 0.0
+
+        # remove duplicated (chain, resi)
+        new_idx = []
+        i_unique = []
+        for i, idx in enumerate(pdb_idx):
+            if idx not in new_idx:
+                new_idx.append(idx)
+                i_unique.append(i)
+
+        pdb_idx = new_idx
+        xyz = xyz[i_unique]
+        mask = mask[i_unique]
+
+        seq = np.array(seq)[i_unique]
+
+        out["na_xyz"]= xyz  # cartesian coordinates, [Lx23]
+        out["na_mask"]= mask  # mask showing which atoms are present in the PDB file, [Lx23]
+        out['na_atom_names']= xyz_names
+        out["na_seq"]= np.array(seq)  # amino acid sequence, [L]
+        out["na_pdb_idx"]= pdb_idx # list of (chain letter, residue number) in the pdb file, [L]
+
 
     return out
 
 
-def process_target(pdb_path, parse_hetatom=False, center=True):
+def process_target(pdb_path, parse_hetatom=False, parse_na=False, center=True):
     # Read target pdb and extract features.
-    target_struct = parse_pdb(pdb_path, parse_hetatom=parse_hetatom)
+    target_struct = parse_pdb(pdb_path, parse_hetatom=parse_hetatom, parse_na=parse_na)
 
     # Zero-center positions
     ca_center = target_struct["xyz"][:, :1, :].mean(axis=0, keepdims=True)
@@ -646,6 +710,14 @@ def process_target(pdb_path, parse_hetatom=False, center=True):
     if parse_hetatom:
         out["xyz_het"] = target_struct["xyz_het"]
         out["info_het"] = target_struct["info_het"]
+    
+    if parse_na:
+        out['na_info']={'mask':target_struct["na_mask"],
+                        'atom_names':target_struct['na_atom_names'],
+                        'seq':target_struct["na_seq"],
+                        'pdb_idx':target_struct["na_pdb_idx"]}
+        out["na_xyz"]= target_struct["na_xyz"]
+
     return out
 
 

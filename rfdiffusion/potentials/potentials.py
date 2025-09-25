@@ -13,6 +13,7 @@ class Potential:
         self.predicted=False
         self.sidechain=False
         self.current_substrate_atoms=None
+        self.current_na_atoms=None
 
     def compute(self, xyz):
         '''
@@ -361,7 +362,7 @@ def contact_energy(dgram, d_0, r_0):
     denominator = torch.pow(divide_by_r_0,12)
     
     ncontacts = (1 - numerator) / ((1 - denominator)).float()
-    return - ncontacts
+    return 1 - ncontacts
 
 def poly_repulse(dgram, r, slope, p=1):
     a = slope / (p * r**(p-1))
@@ -502,6 +503,80 @@ class substrate_contacts(Potential):
             rand_idx = torch.multinomial(idx, 1).long()
             self.motif_frame = xyz[rand_idx[0],:4]
             self.motif_mapping = [(rand_idx, i) for i in range(4)]
+
+class na_contacts(substrate_contacts):
+
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, sidechain=False):
+
+        super().__init__()
+        self.r_0       = r_0
+        self.weight    = weight
+        self.d_0       = d_0
+        self.eps       = eps
+        self.sidechain=sidechain
+        
+        self.motif_frame = None # [4,3] xyz coordinates from 4 atoms of input motif
+        self.motif_mapping = None # list of tuples giving positions of above atoms in design [(resi, atom_idx)]
+        self.na_atoms = None # xyz coordinates of NA atoms
+        self.na_info = None
+        self.current_na_atoms = None
+        r_min = 2
+        self.energies = []
+        self.energies.append(lambda dgram: s * contact_energy(torch.min(dgram, dim=-1)[0], d_0, r_0))
+        if rep_r_min:
+            self.energies.append(lambda dgram: poly_repulse(torch.min(dgram, dim=-1)[0], rep_r_0, rep_s, p=1.5))
+        else:
+            self.energies.append(lambda dgram: poly_repulse(dgram, rep_r_0, rep_s, p=1.5))
+
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=-1, 
+                                                     seq_model_type='protein_mpnn')
+
+    def compute(self, xyz):
+        
+        if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
+            substrate_atoms=(self.na_atoms-self.na_atoms[:11].view(-1,3).mean(dim=0)).detach()
+            
+        else:
+            self._grab_motif_residues(self.xyz_motif)
+        
+            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
+
+            res = torch.tensor([k[0] for k in self.motif_mapping])
+            atoms = torch.tensor([k[1] for k in self.motif_mapping])
+            new_frame = xyz[self.diffusion_mask][res,atoms,:]
+            A, t = self._recover_affine(self.motif_frame, new_frame)
+            substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
+            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
+            assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
+
+        self.current_na_atoms = substrate_atoms.clone().detach()
+        substrate_atoms=substrate_atoms.view(-1,3)
+        mask=self.na_info['mask'].view(-1,3)
+        substrate_atoms=substrate_atoms[mask,:]
+        
+        if self.sidechain:
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                            substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
+        else:
+            diffusion_mask = mask_expand(self.diffusion_mask, 1)
+            Ca = xyz[~diffusion_mask, 1]
+            dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
+
+        all_energies = []
+        for i, energy_fn in enumerate(self.energies):
+            energy = energy_fn(dgram)
+            all_energies.append(energy.sum())
+        energy = sum(all_energies)
+        print('NA CONTACT LOSS:',energy.item())
+        return self.weight * energy
+
     
 class dmasif_interactions(Potential):
 
@@ -510,12 +585,12 @@ class dmasif_interactions(Potential):
     '''
 
     def __init__(self, binderlen, int_weight=1, non_int_weight=1, disable=False,
-                 pos_threshold=3, neg_threshold=3, seq_model_type='protein_mpnn'):
+                 pos_threshold=3, neg_threshold=3, seq_model_type='protein_mpnn', predicted=False):
 
         super().__init__()
 
         self.disable=disable
-        self.predicted=False # seems to be better
+        self.predicted=predicted # False seems to be better
         self.sidechain=True
 
         submodule_path='/'.join(__file__.split('/')[:-4])
