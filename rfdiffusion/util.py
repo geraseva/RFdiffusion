@@ -422,17 +422,16 @@ def writena(
     atomscpu = atoms.cpu().squeeze()
     if bfacts is None:
         bfacts = torch.zeros(atomscpu.shape[0])
-    if idx_pdb is None:
-        idx_pdb = 1 + torch.arange(atomscpu.shape[0])
 
     Bfacts = torch.clamp(bfacts.cpu(), 0, 1)
     for i, s in enumerate(info['pdb_idx']):
         chain=s[0]
         idx_pdb=s[1]
         s=info['seq'][i]
-        for j, atm_j in enumerate(info['atom_names'][i]):
+        atms = na2long[s][:23]
+        for j, atm_j in enumerate(atms):
             if (
-                j < sum(info['mask'][i]) and atm_j is not None
+                info['mask'][i][j]>0
             ):  # and not torch.isnan(atomscpu[i,j,:]).any()):
                 f.write(
                     "%-6s%5s %4s %3s %s%4d    %8.3f%8.3f%8.3f%6.2f%6.2f\n"

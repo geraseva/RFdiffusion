@@ -218,12 +218,12 @@ class GetMartiniSidechains:
 
         import LigandMPNN
         from LigandMPNN.model_utils import ProteinMPNN
-        from LigandMPNN.data_utils import restype_str_to_int, restype_1to3, alphabet
-
+        from LigandMPNN.data_utils import restype_str_to_int, restype_1to3, alphabet, featurize, element_list
         
         restype_3to1={restype_1to3[x]: x for x in restype_1to3.keys()}
         self.renumber_aa_mpnn2rf=torch.tensor([restype_str_to_int[restype_3to1.get(x,'X')] for x in num2aa], dtype=int)
         self.renumber_aa_rf2mpnn=torch.tensor([aa2num[aa_123.get(x,'UNK')] for x in alphabet], dtype=int)
+        self.element_dict = dict(zip(element_list, range(1, len(element_list))))
 
         path_to_LigandMPNN=LigandMPNN.__path__._path[0]
 
@@ -256,6 +256,7 @@ class GetMartiniSidechains:
         self.seq_model.load_state_dict(seq_checkpoint["model_state_dict"])
         self.seq_model.to(self.device)
         self.seq_model.eval()
+        self.featurize=featurize
         print('Load LigandMPNN model')
 
         self.recover_sc=None
@@ -268,50 +269,64 @@ class GetMartiniSidechains:
                                          device=self.device)
         self.recover_sc.eval()
 
-
-    def run_LigandMPNN(self, xyz, seq, seq_mask):
+    def run_LigandMPNN(self, xyz, seq, seq_mask, ligand_xyz=None, ligand_aatypes=None):
 
         L=xyz.shape[0]
 
         xyz=get_O_from_3_points(xyz)
 
-        feature_dict = {}
-        feature_dict["batch_size"]=1
+        input_dict = {}
+        
+        input_dict["X"] = xyz[:,:4,:] # L*4*3 (bb atoms)  ? normalize
+        input_dict["mask"] = torch.ones([ L]).to(self.device)
+
         if seq==None:
-            feature_dict["S"] = torch.full((1, L),20,dtype=int).to(self.device) # encoded sequence
-            feature_dict["chain_mask"] = torch.full((1, L),True,dtype=bool).to(self.device)
+            input_dict["S"] = torch.full(( L),20,dtype=int).to(self.device) # encoded sequence
+            input_dict["chain_mask"] = torch.full(( L),True,dtype=bool).to(self.device)
             raise AttributeError
         else:
-            feature_dict["S"]=seq[None,:,self.renumber_aa_rf2mpnn].argmax(-1).detach()
-            feature_dict["chain_mask"] = ~seq_mask
+            input_dict["S"]=seq[:,self.renumber_aa_rf2mpnn].argmax(-1).squeeze().detach()
+            input_dict["chain_mask"] = ~seq_mask.squeeze().detach()
 
-        feature_dict["X"] = xyz[None,:,:4,:] # B*L*4*3 (bb atoms)  ? normalize
+        if ligand_xyz==None:
+            input_dict["Y"] = torch.zeros([1, 3]).to(self.device)
+            input_dict["Y_t"] = torch.zeros([1]).to(self.device)
+            input_dict["Y_m"] = torch.zeros([1]).to(self.device)
+        else:
+            input_dict["Y"] = ligand_xyz.to(self.device).detach()
+            input_dict["Y_t"] = torch.tensor([self.element_dict.get(x,0) for x in ligand_aatypes], 
+                                             dtype=torch.int32, device=self.device)
+            input_dict["Y_m"] = torch.ones_like(input_dict["Y_t"])
 
-        feature_dict["mask"] = torch.ones([1, L]).to(self.device)
+        input_dict["R_idx"] = torch.arange(L).to(self.device) # L resnums
+
+        if self.binderlen>0:
+            input_dict["chain_labels"] = torch.cat((torch.zeros((self.binderlen)),
+                                              torch.ones((L-self.binderlen))),0).to(self.device)  # L Chain indices
+        else:
+            input_dict["chain_labels"]=torch.zeros((L)).to(self.device)
+
+        feature_dict = self.featurize(input_dict,
+                                      number_of_ligand_atoms=(self.seq_model.features.atom_context_num 
+                                                              if self.seq_model.model_type=='ligand_mpnn' 
+                                                              else 1) ,
+                                      model_type=self.seq_model.model_type)
+
+        feature_dict["batch_size"]=1
         feature_dict["temperature"] = 0.1
         feature_dict["bias"] = torch.zeros((1,L,21)).to(self.device)
         feature_dict["randn"]=torch.randn((1,L)).to(self.device)
         feature_dict["symmetry_residues"] = [[]]
         feature_dict["symmetry_weights"]=[[]]
-        feature_dict["Y"] = torch.zeros([1, L, 16, 3]).to(self.device)
-        feature_dict["Y_t"] = torch.zeros([1, L, 16]).to(self.device)
-        feature_dict["Y_m"] = torch.zeros([1, L, 16]).to(self.device)
 
-        feature_dict["R_idx"] = torch.arange(L)[None,:].to(self.device) # B*L resnums
-
-        if self.binderlen>0:
-            feature_dict["chain_labels"] = torch.cat((torch.zeros((1,self.binderlen)),
-                                              torch.ones((1,L-self.binderlen))),1).to(self.device)  # B*L Chain indices
-        else:
-            feature_dict["chain_labels"]=torch.zeros((1,L)).to(self.device)
-    
-        output_dict = self.seq_model.score(feature_dict, use_sequence=False)
+        output_dict = self.seq_model.score(feature_dict, use_sequence=True)
 
         return output_dict
 
-    def get_aa_probs(self, xyz, seq, seq_mask):
 
-        output_dict=self.run_LigandMPNN(xyz, seq, seq_mask)
+    def get_aa_probs(self, xyz, seq, seq_mask, ligand_xyz=None, ligand_aatypes=None):
+
+        output_dict=self.run_LigandMPNN(xyz, seq, seq_mask, ligand_xyz, ligand_aatypes)
         probs=torch.nn.functional.softmax(output_dict['logits'], dim=-1)
         probs=probs[0,:,self.renumber_aa_mpnn2rf]
         probs[seq_mask.squeeze()]=seq[seq_mask.squeeze()]
@@ -334,7 +349,7 @@ class GetMartiniSidechains:
         return self.recover_sc(feature_dict)
 
     
-    def __call__(self, xyz, seq=None, seq_mask=None):
+    def __call__(self, xyz, seq=None, seq_mask=None, ligand_xyz=None, ligand_aatypes=None):
 
         xyz=xyz.clone().to(self.device)
         
@@ -348,7 +363,7 @@ class GetMartiniSidechains:
         if self.recover_sc==None:
             self.init_recover_sc()
 
-        seq=self.get_aa_probs(xyz, seq, seq_mask)
+        seq=self.get_aa_probs(xyz, seq, seq_mask, ligand_xyz, ligand_aatypes)
 
         d=self.bb2martini(xyz, seq)
 

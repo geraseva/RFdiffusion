@@ -14,8 +14,9 @@ class Potential:
         self.sidechain=False
         self.current_substrate_atoms=None
         self.current_na_atoms=None
+        self.smooth=0
 
-    def compute(self, xyz):
+    def compute(self, xyz,**kwargs):
         '''
             Given the current structure of the model prediction, return the current
             potential as a PyTorch tensor with a single entry
@@ -434,7 +435,7 @@ class substrate_contacts(Potential):
             assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
         
         if self.sidechain:
-            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq, substrate_atoms, self.substrate_info['atom_type'])
             dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
                             substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
         else:
@@ -506,7 +507,8 @@ class substrate_contacts(Potential):
 
 class na_contacts(substrate_contacts):
 
-    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, sidechain=False):
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, 
+                 sidechain=False, smooth=0, predicted=False):
 
         super().__init__()
         self.r_0       = r_0
@@ -514,6 +516,8 @@ class na_contacts(substrate_contacts):
         self.d_0       = d_0
         self.eps       = eps
         self.sidechain=sidechain
+        self.predicted=predicted
+        self.smooth=smooth
         
         self.motif_frame = None # [4,3] xyz coordinates from 4 atoms of input motif
         self.motif_mapping = None # list of tuples giving positions of above atoms in design [(resi, atom_idx)]
@@ -540,7 +544,7 @@ class na_contacts(substrate_contacts):
     def compute(self, xyz):
         
         if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
-            substrate_atoms=(self.na_atoms-self.na_atoms[:11].view(-1,3).mean(dim=0)).detach()
+            substrate_atoms=(self.na_atoms-self.na_atoms[:,:11,:].mean(dim=(0,1))[None,None,:]).detach()
             
         else:
             self._grab_motif_residues(self.xyz_motif)
@@ -557,11 +561,12 @@ class na_contacts(substrate_contacts):
 
         self.current_na_atoms = substrate_atoms.clone().detach()
         substrate_atoms=substrate_atoms.view(-1,3)
-        mask=self.na_info['mask'].view(-1,3)
+        mask=torch.from_numpy(self.na_info['mask']).view(-1)
         substrate_atoms=substrate_atoms[mask,:]
         
         if self.sidechain:
-            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            aatypes=self.na_info['atom_type'].reshape(-1,3)[mask,:]
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq, substrate_atoms, aatypes)
             dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
                             substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
         else:
@@ -635,8 +640,9 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'interface_ncontacts':  interface_ncontacts,
                            'monomer_contacts':     monomer_contacts,
                            'olig_contacts':        olig_contacts,
-                           'substrate_contacts':    substrate_contacts,
-                           'dmasif_interactions':   dmasif_interactions}
+                           'substrate_contacts':   substrate_contacts,
+                           'na_contacts':          na_contacts,
+                           'dmasif_interactions':  dmasif_interactions}
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',

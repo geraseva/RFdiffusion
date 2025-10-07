@@ -122,6 +122,28 @@ def get_mu_xt_x0(xt, px0, t, beta_schedule, alphabar_schedule, eps=1e-6):
     return mu, sigma
 
 
+def rigid_rotation_from_grads(Cas, Ca_grads, eps=1e-8):
+    center=Cas.mean(dim=0) # (3,)
+    r=Cas-center # (L,3)
+
+    trans=Ca_grads.mean(dim=0, keepdim=True) # (L, 3)
+    d=Ca_grads-trans # (L,3)
+    eye=torch.eye(3, device=Cas.device, dtype=Cas.dtype)
+    r2=(r**2).sum(dim=1) # (L,)
+    rrT=r[:,:,None]*r[:,None,:] # (L,3,3)
+    I=(r2[:, None, None] * eye[None, :, :] - rrT).sum(dim=0) # (3,3)
+    tau=torch.cross(r,d, dim=1).sum(dim=0) # (3,)
+    try:
+        omega = torch.linalg.solve(I + eps*eye, tau) # (3,)
+    except RuntimeError:
+        omega = torch.linalg.lstsq(I + eps*eye, tau.unsqueeze(-1)).solution.squeeze(-1)
+
+    rot = torch.cross(omega.unsqueeze(0).expand_as(r), r, dim=1) #(L,3)
+
+    return trans, omega, center, rot
+
+
+
 def get_next_ca(
     xt,
     px0,
@@ -392,7 +414,11 @@ class Denoise:
 
         # Since we are not moving frames, Cb grads are same as Ca grads
         # Need access to calculated Cb coordinates to be able to get Cb grads though
-        Ca_grads = xyz.grad[:, 1, :]
+        if  xyz.grad is None:
+            print("WARNING: NaN in potential gradients, replacing with zero grad.")
+            Ca_grads=torch.zeros_like(xyz[:, 1, :])
+        else:
+            Ca_grads = xyz.grad[:, 1, :]
 
         if not diffusion_mask == None:
             Ca_grads[diffusion_mask, :] = 0
@@ -405,6 +431,20 @@ class Denoise:
         if torch.isnan(Ca_grads).any():
             print("WARNING: NaN in potential gradients, replacing with zero grad.")
             Ca_grads[:] = 0
+
+        # smooth potential effects within protein subunits
+        smooth_scale=max([potential.smooth for potential in self.potential_manager.potentials_to_apply])
+        if smooth_scale>0:
+            Cas=xyz[:, 1, :]
+            binderlen=self.potential_manager.binderlen
+            if binderlen<0:
+                borders=[(0,Ca_grads.shape[0])]
+            else:
+                borders=[(0,binderlen),(binderlen,Ca_grads.shape[0])]
+            for a, b in borders:
+                with torch.no_grad():
+                    trans, omega, center, rot = rigid_rotation_from_grads(Cas[a:b],Ca_grads[a:b])             
+                    Ca_grads[a:b]=Ca_grads[a:b]*(1-smooth_scale)+(trans+rot)*smooth_scale
 
         return Ca_grads
 
@@ -620,19 +660,20 @@ def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=Tru
         res, pdb_idx = [],[]
         for l in lines:
             if l[:4] == "ATOM" and l[12:16].strip() == "C1'":
-                res.append((l[22:26], l[17:20]))
+                res.append((l[22:26], l[17:20].strip()))
                 # chain letter, res num
                 pdb_idx.append((l[21:22].strip(), int(l[22:26].strip())))
-        seq = [util.na2num[r[1]] if r[1] in util.na2num.keys() else 20 for r in res]
+        seq = [util.na2num[r[1]] if r[1] in util.na2num else 20 for r in res]
         pdb_idx = [
             (l[21:22].strip(), int(l[22:26].strip()))
             for l in lines
             if l[:4] == "ATOM" and l[12:16].strip() == "C1'"
         ]  # chain letter, res num
 
-        # 4 BB + up to 10 SC atoms
+        # 3 BB + up to 20 SC atoms
         xyz = np.full((len(res), 23, 3), np.nan, dtype=np.float32)
-        xyz_names = np.full((len(res), 23, 3), np.nan)
+        atom_id = np.full((len(res), 23), np.nan, dtype=np.object)
+        atom_type = np.full((len(res), 23), np.nan, dtype=np.object)
         for l in lines:
             if l[:4] != "ATOM":
                 continue
@@ -640,18 +681,19 @@ def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=Tru
                 l[21:22],
                 int(l[22:26]),
                 " " + l[12:16].strip().ljust(3),
-                l[17:20],
+                l[17:20].strip(),
             )
             if (chain,resNo) in pdb_idx:
                 idx = pdb_idx.index((chain, resNo))
                 for i_atm, tgtatm in enumerate(
-                    util.na2long[util.na2num[aa]][:14]
+                    util.na2long[util.na2num[aa]][:23]
                     ):
                     if (
                         tgtatm is not None and tgtatm.strip() == atom.strip()
                         ):  # ignore whitespace
                         xyz[idx, i_atm, :] = [float(l[30:38]), float(l[38:46]), float(l[46:54])]
-                        xyz_names[idx, i_atm, :] = l[16:20]
+                        atom_id[idx, i_atm] = atom
+                        atom_type[idx, i_atm] = l[77]
                         break
 
         # save atom mask
@@ -674,7 +716,8 @@ def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=Tru
 
         out["na_xyz"]= xyz  # cartesian coordinates, [Lx23]
         out["na_mask"]= mask  # mask showing which atoms are present in the PDB file, [Lx23]
-        out['na_atom_names']= xyz_names
+        out['na_atom_id']= atom_id
+        out['na_atom_type']= atom_type
         out["na_seq"]= np.array(seq)  # amino acid sequence, [L]
         out["na_pdb_idx"]= pdb_idx # list of (chain letter, residue number) in the pdb file, [L]
 
@@ -713,7 +756,8 @@ def process_target(pdb_path, parse_hetatom=False, parse_na=False, center=True):
     
     if parse_na:
         out['na_info']={'mask':target_struct["na_mask"],
-                        'atom_names':target_struct['na_atom_names'],
+                        'atom_id':target_struct['na_atom_id'],
+                        'atom_type':target_struct['na_atom_type'],
                         'seq':target_struct["na_seq"],
                         'pdb_idx':target_struct["na_pdb_idx"]}
         out["na_xyz"]= target_struct["na_xyz"]

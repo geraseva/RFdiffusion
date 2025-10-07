@@ -428,12 +428,14 @@ class Sampler:
                 het_names = np.array([i['name'].strip() for i in self.target_feats['info_het']])
                 xyz_het = self.target_feats['xyz_het'][het_names == self._conf.potentials.substrate]
                 xyz_het = torch.from_numpy(xyz_het)
+                info_het={x: self.target_feats['info_het'][x][het_names == self._conf.potentials.substrate] for x in self.target_feats['info_het']}
                 assert xyz_het.shape[0] > 0, f'expected >0 heteroatoms from ligand with name {self._conf.potentials.substrate}'
                 xyz_motif_prealign = xyz_motif_prealign[0,0][self.diffusion_mask.squeeze()]
                 motif_prealign_com = xyz_motif_prealign[:,1].mean(dim=0)
                 xyz_het_com = xyz_het.mean(dim=0)
                 for pot in self.potential_manager.potentials_to_apply:
                     pot.motif_substrate_atoms = xyz_het
+                    pot.substrate_info = info_het
                     pot.diffusion_mask = self.diffusion_mask.squeeze()
                     pot.xyz_motif = xyz_motif_prealign
                     pot.diffuser = self.diffuser
@@ -444,9 +446,9 @@ class Sampler:
 
         if self.potential_conf.guiding_potentials is not None:
             if any(list(filter(lambda x: "na_" in x, self.potential_conf.guiding_potentials))):
-                assert len(self.target_feats['xyz_na']) > 0, "If you're using the NA Contact potential, \
+                assert len(self.target_feats['na_xyz']) > 0, "If you're using the NA Contact potential, \
                         you need to make sure there's a NA in the input_pdb file!"
-                info_na = self.target_feats["na_info"],
+                info_na = self.target_feats["na_info"]
                 xyz_het = self.target_feats['na_xyz']
                 xyz_het = torch.from_numpy(xyz_het)
                 xyz_motif_prealign = xyz_motif_prealign[0,0][self.diffusion_mask.squeeze()]

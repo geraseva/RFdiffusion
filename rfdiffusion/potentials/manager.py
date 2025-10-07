@@ -93,6 +93,7 @@ class PotentialManager:
         self.potentials_config = potentials_config
         self.ppi_config        = ppi_config
         self.inference_config  = inference_config
+        self.binderlen=binderlen
 
         self.guide_scale = potentials_config.guide_scale
         self.guide_decay = potentials_config.guide_decay

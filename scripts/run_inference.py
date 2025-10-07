@@ -160,7 +160,7 @@ def main(conf: HydraConfig) -> None:
         if len(na_stack)>0:
             writena(f"{out_prefix}_na.pdb",
                         na_stack[0],
-                        sampler.target_feats['info_na'])
+                        sampler.target_feats['na_info'])
         # run metadata
         trb = dict(
             config=OmegaConf.to_container(sampler._conf, resolve=True),
