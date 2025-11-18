@@ -78,14 +78,14 @@ class Sampler:
                 if conf.contigmap.provide_seq is not None:
                     # this is only used for partial diffusion
                     assert conf.diffuser.partial_T is not None, "The provide_seq input is specifically for partial diffusion"
-                if conf.scaffoldguided.scaffoldguided_enable:
+                if conf.scaffoldguided.scaffoldguided:
                     self.ckpt_path = f'{model_directory}/InpaintSeq_Fold_ckpt.pt'
                 else:
                     self.ckpt_path = f'{model_directory}/InpaintSeq_ckpt.pt'
-            elif conf.ppi.hotspot_res is not None and conf.scaffoldguided.scaffoldguided_enable is False:
+            elif conf.ppi.hotspot_res is not None and conf.scaffoldguided.scaffoldguided is False:
                 # use complex trained model
                 self.ckpt_path = f'{model_directory}/Complex_base_ckpt.pt'
-            elif conf.scaffoldguided.scaffoldguided_enable is True:
+            elif conf.scaffoldguided.scaffoldguided is True:
                 # use complex and secondary structure-guided model
                 self.ckpt_path = f'{model_directory}/Complex_Fold_base_ckpt.pt'
             else:

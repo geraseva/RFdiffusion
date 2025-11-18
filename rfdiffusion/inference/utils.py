@@ -502,7 +502,7 @@ class Denoise:
 
 
 def sampler_selector(conf: DictConfig):
-    if conf.scaffoldguided.scaffoldguided_enable:
+    if conf.scaffoldguided.scaffoldguided:
         sampler = model_runners.ScaffoldedSampler(conf)
     else:
         if conf.inference.model_runner == "default":

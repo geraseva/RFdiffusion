@@ -126,7 +126,7 @@ logging:
   inputs: False
 
 scaffoldguided:
-  scaffoldguided_enable: False
+  scaffoldguided: False
   target_pdb: False
   target_path: null
   scaffold_list: null
