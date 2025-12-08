@@ -216,6 +216,7 @@ class Sampler:
                 print(f'WARNING: You are changing {override.split("=")[0]} from the value this model was trained with. Are you sure you know what you are doing?') 
                 mytype = type(self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]])
                 self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]] = mytype(override.split("=")[1])
+                print(override, self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]])
 
     def load_model(self):
         """Create RosettaFold model from preloaded checkpoint."""
@@ -266,7 +267,7 @@ class Sampler:
         ### Parse input pdb ###
         #######################
 
-        self.target_feats = iu.process_target(self.inf_conf.input_pdb, parse_hetatom=True, parse_na=True, center=False)
+        self.target_feats = iu.process_target(self.inf_conf.input_pdb, parse_hetatom=True, parse_na=True, center=True)
 
         ################################
         ### Generate specific contig ###
@@ -428,7 +429,9 @@ class Sampler:
                 het_names = np.array([i['name'].strip() for i in self.target_feats['info_het']])
                 xyz_het = self.target_feats['xyz_het'][het_names == self._conf.potentials.substrate]
                 xyz_het = torch.from_numpy(xyz_het)
-                info_het={x: self.target_feats['info_het'][x][het_names == self._conf.potentials.substrate] for x in self.target_feats['info_het']}
+                info_het={x: np.array([y[x] for y in self.target_feats['info_het'] 
+                                       if y['name'] == self._conf.potentials.substrate]) 
+                                       for x in self.target_feats['info_het'][0]}
                 assert xyz_het.shape[0] > 0, f'expected >0 heteroatoms from ligand with name {self._conf.potentials.substrate}'
                 xyz_motif_prealign = xyz_motif_prealign[0,0][self.diffusion_mask.squeeze()]
                 motif_prealign_com = xyz_motif_prealign[:,1].mean(dim=0)

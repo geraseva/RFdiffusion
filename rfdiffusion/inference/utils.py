@@ -123,21 +123,77 @@ def get_mu_xt_x0(xt, px0, t, beta_schedule, alphabar_schedule, eps=1e-6):
 
 
 def rigid_rotation_from_grads(Cas, Ca_grads, eps=1e-8):
+
+    """
+    Estimate best-fit infinitesimal rigid motion (translation + rotation)
+    from per-residue gradients Ca_grads at positions Cas.
+
+    Intuition
+    ---------
+    We decompose the gradient field on Ca atoms into:
+      - a global translation (mean over residues), and
+      - a small rigid rotation around the geometric center.
+
+    The rotation is solved in the least-squares sense via the 3x3 linear
+    system (I + eps*I) · omega = tau, where
+      - I = Σ(||r_i||^2)·I3 - Σ(r_i r_i^T) is an inertia-like matrix of the point set,
+      - tau = Σ(r_i x d_i) is a torque-like vector of centered gradients,
+      - r_i = Cas_i - center, d_i = Ca_grads_i - trans.
+    This returns the angular-velocity vector omega that best explains the
+    rotational component of the gradients.
+
+    Returns:
+        trans (1,3): mean translation component applied to all residues
+        omega (3,): angular velocity vector defining small rotation
+        center (3,): geometric center of Cas
+        rot (L,3): per-residue rotational component omega x (Cas - center)
+    """
+    device, dtype = Cas.device, Cas.dtype
+    L = Cas.shape[0]
+
+    # Guard empty input
+    if L == 0:
+        return (
+            torch.zeros(1, 3, device=device, dtype=dtype),
+            torch.zeros(3, device=device, dtype=dtype),
+            torch.zeros(3, device=device, dtype=dtype),
+            torch.zeros(0, 3, device=device, dtype=dtype),
+        )
+
+    # Geometric center and centered positions r_i
     center=Cas.mean(dim=0) # (3,)
     r=Cas-center # (L,3)
 
-    trans=Ca_grads.mean(dim=0, keepdim=True) # (L, 3)
+    # Mean translation across residues (global shift suggested by gradients)
+    trans=Ca_grads.mean(dim=0, keepdim=True) # (1, 3)
+    # Centered gradients remove the pure-translation component
     d=Ca_grads-trans # (L,3)
-    eye=torch.eye(3, device=Cas.device, dtype=Cas.dtype)
+
+    eye=torch.eye(3, device=device, dtype=dtype)
+    # Inertia-like matrix of centered points (well-known identity for Σ [r]_x^T [r]_x)
+    # I = Σ(||r_i||^2)·I3 − Σ(r_i r_i^T) ∈ R^{3x3}
+    '''
     r2=(r**2).sum(dim=1) # (L,)
     rrT=r[:,:,None]*r[:,None,:] # (L,3,3)
     I=(r2[:, None, None] * eye[None, :, :] - rrT).sum(dim=0) # (3,3)
+    '''
+    r2_sum = (r * r).sum()  # scalar Σ ||r_i||^2
+    rr_sum = r.T @ r  # (3,3) Σ r_i r_i^T
+    I = r2_sum * eye - rr_sum  # (3,3)
+
+    # Torque-like vector: τ = Σ (r_i × d_i)
+    # Captures the net tendency of gradients to induce rotation about the center.
     tau=torch.cross(r,d, dim=1).sum(dim=0) # (3,)
+        
+    # Solve for small-rotation vector ω from (I + eps·I3)·ω = τ.
+    # eps stabilizes near-singular geometries (e.g., collinear or coplanar points).
     try:
         omega = torch.linalg.solve(I + eps*eye, tau) # (3,)
     except RuntimeError:
+        # Fallback in case of numerical issues (rare): least-squares solution.
         omega = torch.linalg.lstsq(I + eps*eye, tau.unsqueeze(-1)).solution.squeeze(-1)
 
+    # Per-residue rotational component: ω × r_i
     rot = torch.cross(omega.unsqueeze(0).expand_as(r), r, dim=1) #(L,3)
 
     return trans, omega, center, rot
@@ -652,7 +708,7 @@ def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=Tru
                 )
                 xyz_het.append([float(l[30:38]), float(l[38:46]), float(l[46:54])])
 
-        out["xyz_het"] = np.array(xyz_het)
+        out["xyz_het"] = np.array(xyz_het).reshape((len(xyz_het),3))
         out["info_het"] = info_het
     
     # nucleic acids
@@ -671,7 +727,7 @@ def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=Tru
         ]  # chain letter, res num
 
         # 3 BB + up to 20 SC atoms
-        xyz = np.full((len(res), 23, 3), np.nan, dtype=np.float32)
+        xyz = np.full((len(res), 23, 3), np.nan, dtype=np.float64)
         atom_id = np.full((len(res), 23), np.nan, dtype=np.object)
         atom_type = np.full((len(res), 23), np.nan, dtype=np.object)
         for l in lines:
@@ -751,7 +807,7 @@ def process_target(pdb_path, parse_hetatom=False, parse_na=False, center=True):
         "pdb_idx": target_struct["pdb_idx"],
     }
     if parse_hetatom:
-        out["xyz_het"] = target_struct["xyz_het"]
+        out["xyz_het"] = target_struct["xyz_het"] - ca_center
         out["info_het"] = target_struct["info_het"]
     
     if parse_na:
@@ -760,7 +816,7 @@ def process_target(pdb_path, parse_hetatom=False, parse_na=False, center=True):
                         'atom_type':target_struct['na_atom_type'],
                         'seq':target_struct["na_seq"],
                         'pdb_idx':target_struct["na_pdb_idx"]}
-        out["na_xyz"]= target_struct["na_xyz"]
+        out["na_xyz"]= target_struct["na_xyz"] - ca_center
 
     return out
 

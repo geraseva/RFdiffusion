@@ -378,7 +378,8 @@ class substrate_contacts(Potential):
     Implicitly models a ligand with an attractive-repulsive potential.
     '''
 
-    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, sidechain=False):
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, 
+                 sidechain=False, smooth=0, predicted=False):
 
         super().__init__()
         self.r_0       = r_0
@@ -386,6 +387,8 @@ class substrate_contacts(Potential):
         self.d_0       = d_0
         self.eps       = eps
         self.sidechain=sidechain
+        self.predicted=predicted
+        self.smooth=smooth
         
         # motif frame coordinates
         # NOTE: these probably need to be set after sample_init() call, because the motif sequence position in design must be known
@@ -451,7 +454,7 @@ class substrate_contacts(Potential):
         self.current_substrate_atoms = substrate_atoms.clone().detach()
         energy = sum(all_energies)
         print('SUBSTRATE CONTACT LOSS:',energy.item())
-        return self.weight * energy
+        return - self.weight * energy
 
         #Potential value is the average of both radii of gyration (is avg. the best way to do this?)
         return self.weight * ncontacts.sum()
@@ -544,22 +547,26 @@ class na_contacts(substrate_contacts):
     def compute(self, xyz):
         
         if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
-            substrate_atoms=(self.na_atoms-self.na_atoms[:,:11,:].mean(dim=(0,1))[None,None,:]).detach()
+            substrate_atoms=self.na_atoms.clone().detach()
+            #substrate_atoms=(self.na_atoms-self.na_atoms[:,:11,:].mean(dim=(0,1))[None,None,:]).detach()
+            self.current_na_atoms = substrate_atoms.clone().detach()
             
         else:
             self._grab_motif_residues(self.xyz_motif)
         
-            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
+            L, D, _ = self.na_atoms.shape
+            idx=torch.argmin(torch.sum(torch.square(self.na_atoms.view(-1,3) - self.motif_frame[0]), dim=-1))
+            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.na_atoms.view(-1,3)[idx] - self.motif_frame[0]), dim=-1))) 
 
             res = torch.tensor([k[0] for k in self.motif_mapping])
             atoms = torch.tensor([k[1] for k in self.motif_mapping])
             new_frame = xyz[self.diffusion_mask][res,atoms,:]
             A, t = self._recover_affine(self.motif_frame, new_frame)
-            substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
-            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
+            substrate_atoms = torch.mm(A, self.na_atoms.view(-1,3).transpose(0,1)).transpose(0,1) + t
+            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[idx]), dim=-1)))
             assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
+            self.current_na_atoms = substrate_atoms.view(L, D, 3).clone().detach()
 
-        self.current_na_atoms = substrate_atoms.clone().detach()
         substrate_atoms=substrate_atoms.view(-1,3)
         mask=torch.from_numpy(self.na_info['mask']).view(-1)
         substrate_atoms=substrate_atoms[mask,:]
@@ -580,7 +587,7 @@ class na_contacts(substrate_contacts):
             all_energies.append(energy.sum())
         energy = sum(all_energies)
         print('NA CONTACT LOSS:',energy.item())
-        return self.weight * energy
+        return - self.weight * energy
 
     
 class dmasif_interactions(Potential):
@@ -628,7 +635,7 @@ class dmasif_interactions(Potential):
             potential.requires_grad_()
             xyz.grad=torch.zeros_like(xyz)
                    
-        return potential
+        return - potential
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
