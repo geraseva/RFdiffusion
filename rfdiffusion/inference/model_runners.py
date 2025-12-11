@@ -172,6 +172,7 @@ class Sampler:
         self.target_feats = iu.process_target(
             self.inf_conf.input_pdb, parse_hetatom=True, center=False
         )
+
         self.chain_idx = None
         self.idx_pdb = None
 
@@ -305,9 +306,7 @@ class Sampler:
         ### Parse input pdb ###
         #######################
 
-        self.target_feats = iu.process_target(
-            self.inf_conf.input_pdb, parse_hetatom=True, center=False
-        )
+        self.target_feats = iu.process_target(self.inf_conf.input_pdb, parse_hetatom=True, parse_na=True, center=True)
 
         ################################
         ### Generate specific contig ###
@@ -491,6 +490,17 @@ class Sampler:
         self.state_prev = None
 
         #########################################
+        ### Parse seq for potentials using sidechains ###
+        #########################################
+
+        if self.potential_conf.guiding_potentials is not None:
+            for pot in self.potential_manager.potentials_to_apply:
+                if pot.sidechain:
+                    pot.seq = seq_t
+                    pot.mask_seq = self.mask_seq
+
+
+        #########################################
         ### Parse ligand for ligand potential ###
         #########################################
 
@@ -524,6 +534,26 @@ class Sampler:
                 xyz_het_com = xyz_het.mean(dim=0)
                 for pot in self.potential_manager.potentials_to_apply:
                     pot.motif_substrate_atoms = xyz_het
+                    pot.substrate_info = info_het
+                    pot.diffusion_mask = self.diffusion_mask.squeeze()
+                    pot.xyz_motif = xyz_motif_prealign
+                    pot.diffuser = self.diffuser
+
+        #########################################
+        ### Parse NA for NA potential ###
+        #########################################
+
+        if self.potential_conf.guiding_potentials is not None:
+            if any(list(filter(lambda x: "na_" in x, self.potential_conf.guiding_potentials))):
+                assert len(self.target_feats['na_xyz']) > 0, "If you're using the NA Contact potential, \
+                        you need to make sure there's a NA in the input_pdb file!"
+                info_na = self.target_feats["na_info"]
+                xyz_het = self.target_feats['na_xyz']
+                xyz_het = torch.from_numpy(xyz_het)
+                xyz_motif_prealign = xyz_motif_prealign[0,0][self.diffusion_mask.squeeze()]
+                for pot in self.potential_manager.potentials_to_apply:
+                    pot.na_atoms = xyz_het
+                    pot.na_info=info_na
                     pot.diffusion_mask = self.diffusion_mask.squeeze()
                     pot.xyz_motif = xyz_motif_prealign
                     pot.diffuser = self.diffuser

@@ -93,6 +93,7 @@ class PotentialManager:
         self.potentials_config = potentials_config
         self.ppi_config        = ppi_config
         self.inference_config  = inference_config
+        self.binderlen=binderlen
 
         self.guide_scale = potentials_config.guide_scale
         self.guide_decay = potentials_config.guide_decay
@@ -167,12 +168,12 @@ class PotentialManager:
 
         return to_apply
 
-    def compute_all_potentials(self, xyz):
+    def compute_all_potentials(self, xyz, predicted=False):
         '''
             This is the money call. Take the current sequence and structure information and get the sum of all of the potentials that are being used
         '''
 
-        potential_list = [potential.compute(xyz) for potential in self.potentials_to_apply]
+        potential_list = [potential.compute(xyz) for potential in self.potentials_to_apply if potential.predicted==predicted]
         potential_stack = torch.stack(potential_list, dim=0)
 
         return torch.sum(potential_stack, dim=0)

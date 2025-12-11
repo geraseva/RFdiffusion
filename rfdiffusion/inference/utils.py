@@ -122,6 +122,84 @@ def get_mu_xt_x0(xt, px0, t, beta_schedule, alphabar_schedule, eps=1e-6):
     return mu, sigma
 
 
+def rigid_rotation_from_grads(Cas, Ca_grads, eps=1e-8):
+
+    """
+    Estimate best-fit infinitesimal rigid motion (translation + rotation)
+    from per-residue gradients Ca_grads at positions Cas.
+
+    Intuition
+    ---------
+    We decompose the gradient field on Ca atoms into:
+      - a global translation (mean over residues), and
+      - a small rigid rotation around the geometric center.
+
+    The rotation is solved in the least-squares sense via the 3x3 linear
+    system (I + eps*I) · omega = tau, where
+      - I = Σ(||r_i||^2)·I3 - Σ(r_i r_i^T) is an inertia-like matrix of the point set,
+      - tau = Σ(r_i x d_i) is a torque-like vector of centered gradients,
+      - r_i = Cas_i - center, d_i = Ca_grads_i - trans.
+    This returns the angular-velocity vector omega that best explains the
+    rotational component of the gradients.
+
+    Returns:
+        trans (1,3): mean translation component applied to all residues
+        omega (3,): angular velocity vector defining small rotation
+        center (3,): geometric center of Cas
+        rot (L,3): per-residue rotational component omega x (Cas - center)
+    """
+    device, dtype = Cas.device, Cas.dtype
+    L = Cas.shape[0]
+
+    # Guard empty input
+    if L == 0:
+        return (
+            torch.zeros(1, 3, device=device, dtype=dtype),
+            torch.zeros(3, device=device, dtype=dtype),
+            torch.zeros(3, device=device, dtype=dtype),
+            torch.zeros(0, 3, device=device, dtype=dtype),
+        )
+
+    # Geometric center and centered positions r_i
+    center=Cas.mean(dim=0) # (3,)
+    r=Cas-center # (L,3)
+
+    # Mean translation across residues (global shift suggested by gradients)
+    trans=Ca_grads.mean(dim=0, keepdim=True) # (1, 3)
+    # Centered gradients remove the pure-translation component
+    d=Ca_grads-trans # (L,3)
+
+    eye=torch.eye(3, device=device, dtype=dtype)
+    # Inertia-like matrix of centered points (well-known identity for Σ [r]_x^T [r]_x)
+    # I = Σ(||r_i||^2)·I3 − Σ(r_i r_i^T) ∈ R^{3x3}
+    '''
+    r2=(r**2).sum(dim=1) # (L,)
+    rrT=r[:,:,None]*r[:,None,:] # (L,3,3)
+    I=(r2[:, None, None] * eye[None, :, :] - rrT).sum(dim=0) # (3,3)
+    '''
+    r2_sum = (r * r).sum()  # scalar Σ ||r_i||^2
+    rr_sum = r.T @ r  # (3,3) Σ r_i r_i^T
+    I = r2_sum * eye - rr_sum  # (3,3)
+
+    # Torque-like vector: τ = Σ (r_i × d_i)
+    # Captures the net tendency of gradients to induce rotation about the center.
+    tau=torch.cross(r,d, dim=1).sum(dim=0) # (3,)
+        
+    # Solve for small-rotation vector ω from (I + eps·I3)·ω = τ.
+    # eps stabilizes near-singular geometries (e.g., collinear or coplanar points).
+    try:
+        omega = torch.linalg.solve(I + eps*eye, tau) # (3,)
+    except RuntimeError:
+        # Fallback in case of numerical issues (rare): least-squares solution.
+        omega = torch.linalg.lstsq(I + eps*eye, tau.unsqueeze(-1)).solution.squeeze(-1)
+
+    # Per-residue rotational component: ω × r_i
+    rot = torch.cross(omega.unsqueeze(0).expand_as(r), r, dim=1) #(L,3)
+
+    return trans, omega, center, rot
+
+
+
 def get_next_ca(
     xt,
     px0,
@@ -360,7 +438,7 @@ class Denoise:
         px0_[~atom_mask] = float("nan")
         return torch.Tensor(px0_)
 
-    def get_potential_gradients(self, xyz, diffusion_mask):
+    def get_potential_gradients(self, xyz, diffusion_mask, t, predicted=False):
         """
         This could be moved into potential manager if desired - NRB
 
@@ -375,7 +453,8 @@ class Denoise:
             Ca_grads (torch.tensor): [L,3] The gradient at each Ca atom
         """
 
-        if self.potential_manager == None or self.potential_manager.is_empty():
+        if (self.potential_manager == None or 
+            sum([potential.predicted==predicted for potential in self.potential_manager.potentials_to_apply])<1):
             return torch.zeros(xyz.shape[0], 3)
 
         use_Cb = False
@@ -386,20 +465,42 @@ class Denoise:
         if not xyz.grad is None:
             xyz.grad.zero_()
 
-        current_potential = self.potential_manager.compute_all_potentials(xyz)
+        current_potential = self.potential_manager.compute_all_potentials(xyz, predicted)
         current_potential.backward()
 
         # Since we are not moving frames, Cb grads are same as Ca grads
         # Need access to calculated Cb coordinates to be able to get Cb grads though
-        Ca_grads = xyz.grad[:, 1, :]
+        if  xyz.grad is None:
+            print("WARNING: NaN in potential gradients, replacing with zero grad.")
+            Ca_grads=torch.zeros_like(xyz[:, 1, :])
+        else:
+            Ca_grads = xyz.grad[:, 1, :]
 
         if not diffusion_mask == None:
             Ca_grads[diffusion_mask, :] = 0
+        
+        # clamp gradients
+        dist=(Ca_grads**2).sum(-1, keepdim=True).sqrt()
+        Ca_grads=torch.where(dist<=1/self.alphabar_schedule[t-1], Ca_grads, Ca_grads/dist/self.alphabar_schedule[t-1]).detach()
 
         # check for NaN's
         if torch.isnan(Ca_grads).any():
             print("WARNING: NaN in potential gradients, replacing with zero grad.")
             Ca_grads[:] = 0
+
+        # smooth potential effects within protein subunits
+        smooth_scale=max([potential.smooth for potential in self.potential_manager.potentials_to_apply])
+        if smooth_scale>0:
+            Cas=xyz[:, 1, :]
+            binderlen=self.potential_manager.binderlen
+            if binderlen<0:
+                borders=[(0,Ca_grads.shape[0])]
+            else:
+                borders=[(0,binderlen),(binderlen,Ca_grads.shape[0])]
+            for a, b in borders:
+                with torch.no_grad():
+                    trans, omega, center, rot = rigid_rotation_from_grads(Cas[a:b],Ca_grads[a:b])             
+                    Ca_grads[a:b]=Ca_grads[a:b]*(1-smooth_scale)+(trans+rot)*smooth_scale
 
         return Ca_grads
 
@@ -452,7 +553,7 @@ class Denoise:
         # Now done with diffusion mask. if fix motif is False, just set diffusion mask to be all True, and all coordinates can diffuse
         if not fix_motif:
             diffusion_mask[:] = False
-
+        
         # get the next set of CA coordinates
         noise_scale_ca = self.noise_schedule_ca(t)
         _, ca_deltas = get_next_ca(
@@ -480,13 +581,16 @@ class Denoise:
 
         # Apply gradient step from guiding potentials
         # This can be moved to below where the full atom representation is calculated to allow for potentials involving sidechains
-
+        
         grad_ca = self.get_potential_gradients(
-            xt.clone(), diffusion_mask=diffusion_mask
+            xt.clone(), diffusion_mask=diffusion_mask, t=t
+        ) + self.get_potential_gradients(
+            px0.clone(), diffusion_mask=diffusion_mask,
+            t=t, predicted=True
         )
-
+        
         ca_deltas += self.potential_manager.get_guide_scale(t) * grad_ca
-
+        
         # add the delta to the new frames
         frames_next = torch.from_numpy(frames_next) + ca_deltas[:, None, :]  # translate
 
@@ -523,7 +627,7 @@ def parse_pdb(filename, **kwargs):
     return parse_pdb_lines(lines, **kwargs)
 
 
-def parse_pdb_lines(lines, parse_hetatom=False, ignore_het_h=True):
+def parse_pdb_lines(lines, parse_hetatom=False, parse_na=False, ignore_het_h=True):
     # indices of residues observed in the structure
     res, pdb_idx = [],[]
     for l in lines:
@@ -604,15 +708,82 @@ def parse_pdb_lines(lines, parse_hetatom=False, ignore_het_h=True):
                 )
                 xyz_het.append([float(l[30:38]), float(l[38:46]), float(l[46:54])])
 
-        out["xyz_het"] = np.array(xyz_het)
+        out["xyz_het"] = np.array(xyz_het).reshape((len(xyz_het),3))
         out["info_het"] = info_het
+    
+    # nucleic acids
+    if parse_na:
+        res, pdb_idx = [],[]
+        for l in lines:
+            if l[:4] == "ATOM" and l[12:16].strip() == "C1'":
+                res.append((l[22:26], l[17:20].strip()))
+                # chain letter, res num
+                pdb_idx.append((l[21:22].strip(), int(l[22:26].strip())))
+        seq = [util.na2num[r[1]] if r[1] in util.na2num else 20 for r in res]
+        pdb_idx = [
+            (l[21:22].strip(), int(l[22:26].strip()))
+            for l in lines
+            if l[:4] == "ATOM" and l[12:16].strip() == "C1'"
+        ]  # chain letter, res num
+
+        # 3 BB + up to 20 SC atoms
+        xyz = np.full((len(res), 23, 3), np.nan, dtype=np.float64)
+        atom_id = np.full((len(res), 23), np.nan, dtype=np.object)
+        atom_type = np.full((len(res), 23), np.nan, dtype=np.object)
+        for l in lines:
+            if l[:4] != "ATOM":
+                continue
+            chain, resNo, atom, aa = (
+                l[21:22],
+                int(l[22:26]),
+                " " + l[12:16].strip().ljust(3),
+                l[17:20].strip(),
+            )
+            if (chain,resNo) in pdb_idx:
+                idx = pdb_idx.index((chain, resNo))
+                for i_atm, tgtatm in enumerate(
+                    util.na2long[util.na2num[aa]][:23]
+                    ):
+                    if (
+                        tgtatm is not None and tgtatm.strip() == atom.strip()
+                        ):  # ignore whitespace
+                        xyz[idx, i_atm, :] = [float(l[30:38]), float(l[38:46]), float(l[46:54])]
+                        atom_id[idx, i_atm] = atom
+                        atom_type[idx, i_atm] = l[77]
+                        break
+
+        # save atom mask
+        mask = np.logical_not(np.isnan(xyz[..., 0]))
+        xyz[np.isnan(xyz[..., 0])] = 0.0
+
+        # remove duplicated (chain, resi)
+        new_idx = []
+        i_unique = []
+        for i, idx in enumerate(pdb_idx):
+            if idx not in new_idx:
+                new_idx.append(idx)
+                i_unique.append(i)
+
+        pdb_idx = new_idx
+        xyz = xyz[i_unique]
+        mask = mask[i_unique]
+
+        seq = np.array(seq)[i_unique]
+
+        out["na_xyz"]= xyz  # cartesian coordinates, [Lx23]
+        out["na_mask"]= mask  # mask showing which atoms are present in the PDB file, [Lx23]
+        out['na_atom_id']= atom_id
+        out['na_atom_type']= atom_type
+        out["na_seq"]= np.array(seq)  # amino acid sequence, [L]
+        out["na_pdb_idx"]= pdb_idx # list of (chain letter, residue number) in the pdb file, [L]
+
 
     return out
 
 
-def process_target(pdb_path, parse_hetatom=False, center=True):
+def process_target(pdb_path, parse_hetatom=False, parse_na=False, center=True):
     # Read target pdb and extract features.
-    target_struct = parse_pdb(pdb_path, parse_hetatom=parse_hetatom)
+    target_struct = parse_pdb(pdb_path, parse_hetatom=parse_hetatom, parse_na=parse_na)
 
     # Zero-center positions
     ca_center = target_struct["xyz"][:, :1, :].mean(axis=0, keepdims=True)
@@ -636,8 +807,17 @@ def process_target(pdb_path, parse_hetatom=False, center=True):
         "pdb_idx": target_struct["pdb_idx"],
     }
     if parse_hetatom:
-        out["xyz_het"] = target_struct["xyz_het"]
+        out["xyz_het"] = target_struct["xyz_het"] - ca_center
         out["info_het"] = target_struct["info_het"]
+    
+    if parse_na:
+        out['na_info']={'mask':target_struct["na_mask"],
+                        'atom_id':target_struct['na_atom_id'],
+                        'atom_type':target_struct['na_atom_type'],
+                        'seq':target_struct["na_seq"],
+                        'pdb_idx':target_struct["na_pdb_idx"]}
+        out["na_xyz"]= target_struct["na_xyz"] - ca_center
+
     return out
 
 

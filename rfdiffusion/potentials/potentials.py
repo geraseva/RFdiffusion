@@ -8,8 +8,15 @@ class Potential:
     '''
         Interface class that defines the functions a potential must implement
     '''
+    def __init__(self):
 
-    def compute(self, xyz):
+        self.predicted=False
+        self.sidechain=False
+        self.current_substrate_atoms=None
+        self.current_na_atoms=None
+        self.smooth=0
+
+    def compute(self, xyz,**kwargs):
         '''
             Given the current structure of the model prediction, return the current
             potential as a PyTorch tensor with a single entry
@@ -31,7 +38,7 @@ class monomer_ROG(Potential):
     '''
 
     def __init__(self, weight=1, min_dist=15):
-
+        super().__init__()
         self.weight   = weight
         self.min_dist = min_dist
 
@@ -57,6 +64,7 @@ class binder_ROG(Potential):
 
     def __init__(self, binderlen, weight=1, min_dist=15):
 
+        super().__init__()
         self.binderlen = binderlen
         self.min_dist  = min_dist
         self.weight    = weight
@@ -87,6 +95,7 @@ class dimer_ROG(Potential):
 
     def __init__(self, binderlen, weight=1, min_dist=15):
 
+        super().__init__()
         self.binderlen = binderlen
         self.min_dist  = min_dist
         self.weight    = weight
@@ -127,6 +136,7 @@ class binder_ncontacts(Potential):
 
     def __init__(self, binderlen, weight=1, r_0=8, d_0=4):
 
+        super().__init__()
         self.binderlen = binderlen
         self.r_0       = r_0
         self.weight    = weight
@@ -159,23 +169,37 @@ class interface_ncontacts(Potential):
     '''
 
 
-    def __init__(self, binderlen, weight=1, r_0=8, d_0=6):
+    def __init__(self, binderlen, weight=1, r_0=8, d_0=6, sidechain=False):
 
+        super().__init__()
         self.binderlen = binderlen
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
+        self.sidechain=sidechain
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=binderlen, 
+                                                     seq_model_type='protein_mpnn')
 
     def compute(self, xyz):
 
-        # Extract binder Ca residues
-        Ca_b = xyz[:self.binderlen,1] # [Lb,3]
+        if self.sidechain:
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                                d['atom_xyz_p2'][None].contiguous(), p=2) #  # [1,Lb,Lt]
+        else:
+            # Extract binder Ca residues
+            Ca_b = xyz[:self.binderlen,1] # [Lb,3]
+            # Extract target Ca residues
+            Ca_t = xyz[self.binderlen:,1] # [Lt,3]
+            #cdist needs a batch dimension - NRB
+            dgram = torch.cdist(Ca_b[None,...].contiguous(), Ca_t[None,...].contiguous(), p=2) # [1,Lb,Lt]
 
-        # Extract target Ca residues
-        Ca_t = xyz[self.binderlen:,1] # [Lt,3]
-
-        #cdist needs a batch dimension - NRB
-        dgram = torch.cdist(Ca_b[None,...].contiguous(), Ca_t[None,...].contiguous(), p=2) # [1,Lb,Lt]
         divide_by_r_0 = (dgram - self.d_0) / self.r_0
         numerator = torch.pow(divide_by_r_0,6)
         denominator = torch.pow(divide_by_r_0,12)
@@ -200,6 +224,7 @@ class monomer_contacts(Potential):
 
     def __init__(self, weight=1, r_0=8, d_0=2, eps=1e-6):
 
+        super().__init__()
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
@@ -245,6 +270,7 @@ class olig_contacts(Potential):
 
             weight (int/float, optional): Scaling/weighting factor
         """
+        super().__init__()
         self.contact_matrix = contact_matrix
         self.weight_intra = weight_intra 
         self.weight_inter = weight_inter 
@@ -337,7 +363,7 @@ def contact_energy(dgram, d_0, r_0):
     denominator = torch.pow(divide_by_r_0,12)
     
     ncontacts = (1 - numerator) / ((1 - denominator)).float()
-    return - ncontacts
+    return 1 - ncontacts
 
 def poly_repulse(dgram, r, slope, p=1):
     a = slope / (p * r**(p-1))
@@ -352,18 +378,24 @@ class substrate_contacts(Potential):
     Implicitly models a ligand with an attractive-repulsive potential.
     '''
 
-    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1):
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, 
+                 sidechain=False, smooth=0, predicted=False):
 
+        super().__init__()
         self.r_0       = r_0
         self.weight    = weight
         self.d_0       = d_0
         self.eps       = eps
+        self.sidechain=sidechain
+        self.predicted=predicted
+        self.smooth=smooth
         
         # motif frame coordinates
         # NOTE: these probably need to be set after sample_init() call, because the motif sequence position in design must be known
         self.motif_frame = None # [4,3] xyz coordinates from 4 atoms of input motif
         self.motif_mapping = None # list of tuples giving positions of above atoms in design [(resi, atom_idx)]
         self.motif_substrate_atoms = None # xyz coordinates of substrate from input motif
+        self.current_substrate_atoms = None
         r_min = 2
         self.energies = []
         self.energies.append(lambda dgram: s * contact_energy(torch.min(dgram, dim=-1)[0], d_0, r_0))
@@ -372,37 +404,57 @@ class substrate_contacts(Potential):
         else:
             self.energies.append(lambda dgram: poly_repulse(dgram, rep_r_0, rep_s, p=1.5))
 
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=-1, 
+                                                     seq_model_type='protein_mpnn')
 
     def compute(self, xyz):
         
-        # First, get random set of atoms
-        # This operates on self.xyz_motif, which is assigned to this class in the model runner (for horrible plumbing reasons)
-        self._grab_motif_residues(self.xyz_motif)
+        if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
+            substrate_atoms=(self.motif_substrate_atoms-self.motif_substrate_atoms.mean(dim=0)).detach()
+            
+        else:
+            # First, get random set of atoms
+            # This operates on self.xyz_motif, which is assigned to this class in the model runner (for horrible plumbing reasons)
+            self._grab_motif_residues(self.xyz_motif)
         
-        # for checking affine transformation is corect
-        first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
+            # for checking affine transformation is correct
+            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.motif_substrate_atoms[0] - self.motif_frame[0]), dim=-1))) 
 
-        # grab the coordinates of the corresponding atoms in the new frame using mapping
-        res = torch.tensor([k[0] for k in self.motif_mapping])
-        atoms = torch.tensor([k[1] for k in self.motif_mapping])
-        new_frame = xyz[self.diffusion_mask][res,atoms,:]
-        # calculate affine transformation matrix and translation vector b/w new frame and motif frame
-        A, t = self._recover_affine(self.motif_frame, new_frame)
-        # apply affine transformation to substrate atoms
-        substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
-        second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
-        assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
-        diffusion_mask = mask_expand(self.diffusion_mask, 1)
-        Ca = xyz[~diffusion_mask, 1]
-
-        #cdist needs a batch dimension - NRB
-        dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
+            # grab the coordinates of the corresponding atoms in the new frame using mapping
+            res = torch.tensor([k[0] for k in self.motif_mapping])
+            atoms = torch.tensor([k[1] for k in self.motif_mapping])
+            new_frame = xyz[self.diffusion_mask][res,atoms,:]
+            # calculate affine transformation matrix and translation vector b/w new frame and motif frame
+            A, t = self._recover_affine(self.motif_frame, new_frame)
+            # apply affine transformation to substrate atoms
+            substrate_atoms = torch.mm(A, self.motif_substrate_atoms.transpose(0,1)).transpose(0,1) + t
+            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[0]), dim=-1)))
+            assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
+        
+        if self.sidechain:
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq, substrate_atoms, self.substrate_info['atom_type'])
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                            substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
+        else:
+            diffusion_mask = mask_expand(self.diffusion_mask, 1)
+            Ca = xyz[~diffusion_mask, 1]
+            #cdist needs a batch dimension - NRB
+            dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
 
         all_energies = []
         for i, energy_fn in enumerate(self.energies):
             energy = energy_fn(dgram)
             all_energies.append(energy.sum())
-        return - self.weight * sum(all_energies)
+        self.current_substrate_atoms = substrate_atoms.clone().detach()
+        energy = sum(all_energies)
+        print('SUBSTRATE CONTACT LOSS:',energy.item())
+        return - self.weight * energy
 
         #Potential value is the average of both radii of gyration (is avg. the best way to do this?)
         return self.weight * ncontacts.sum()
@@ -455,6 +507,88 @@ class substrate_contacts(Potential):
             rand_idx = torch.multinomial(idx, 1).long()
             self.motif_frame = xyz[rand_idx[0],:4]
             self.motif_mapping = [(rand_idx, i) for i in range(4)]
+
+class na_contacts(substrate_contacts):
+
+    def __init__(self, weight=1, r_0=8, d_0=2, s=1, eps=1e-6, rep_r_0=5, rep_s=2, rep_r_min=1, 
+                 sidechain=False, smooth=0, predicted=False):
+
+        super().__init__()
+        self.r_0       = r_0
+        self.weight    = weight
+        self.d_0       = d_0
+        self.eps       = eps
+        self.sidechain=sidechain
+        self.predicted=predicted
+        self.smooth=smooth
+        
+        self.motif_frame = None # [4,3] xyz coordinates from 4 atoms of input motif
+        self.motif_mapping = None # list of tuples giving positions of above atoms in design [(resi, atom_idx)]
+        self.na_atoms = None # xyz coordinates of NA atoms
+        self.na_info = None
+        self.current_na_atoms = None
+        r_min = 2
+        self.energies = []
+        self.energies.append(lambda dgram: s * contact_energy(torch.min(dgram, dim=-1)[0], d_0, r_0))
+        if rep_r_min:
+            self.energies.append(lambda dgram: poly_repulse(torch.min(dgram, dim=-1)[0], rep_r_0, rep_s, p=1.5))
+        else:
+            self.energies.append(lambda dgram: poly_repulse(dgram, rep_r_0, rep_s, p=1.5))
+
+        if sidechain:
+            self.seq=None # known sequence
+            self.mask_seq=None # mask of useful sequence
+      
+            from rfdiffusion.recover_sidechains import GetMartiniSidechains
+
+            self.get_sidechains=GetMartiniSidechains(binderlen=-1, 
+                                                     seq_model_type='protein_mpnn')
+
+    def compute(self, xyz):
+        
+        if self.xyz_motif==None or self.xyz_motif.shape[0]<3:
+            substrate_atoms=self.na_atoms.clone().detach()
+            #substrate_atoms=(self.na_atoms-self.na_atoms[:,:11,:].mean(dim=(0,1))[None,None,:]).detach()
+            self.current_na_atoms = substrate_atoms.clone().detach()
+            
+        else:
+            self._grab_motif_residues(self.xyz_motif)
+        
+            L, D, _ = self.na_atoms.shape
+            idx=torch.argmin(torch.sum(torch.square(self.na_atoms.view(-1,3) - self.motif_frame[0]), dim=-1))
+            first_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(self.na_atoms.view(-1,3)[idx] - self.motif_frame[0]), dim=-1))) 
+
+            res = torch.tensor([k[0] for k in self.motif_mapping])
+            atoms = torch.tensor([k[1] for k in self.motif_mapping])
+            new_frame = xyz[self.diffusion_mask][res,atoms,:]
+            A, t = self._recover_affine(self.motif_frame, new_frame)
+            substrate_atoms = torch.mm(A, self.na_atoms.view(-1,3).transpose(0,1)).transpose(0,1) + t
+            second_distance = torch.sqrt(torch.sqrt(torch.sum(torch.square(new_frame[0] - substrate_atoms[idx]), dim=-1)))
+            assert abs(first_distance - second_distance) < 0.01, "Alignment seems to be bad" 
+            self.current_na_atoms = substrate_atoms.view(L, D, 3).clone().detach()
+
+        substrate_atoms=substrate_atoms.view(-1,3)
+        mask=torch.from_numpy(self.na_info['mask']).view(-1)
+        substrate_atoms=substrate_atoms[mask,:]
+        
+        if self.sidechain:
+            aatypes=self.na_info['atom_type'].reshape(-1,3)[mask,:]
+            d=self.get_sidechains(xyz, self.seq, self.mask_seq, substrate_atoms, aatypes)
+            dgram = torch.cdist(d['atom_xyz_p1'][None,...].contiguous(), 
+                            substrate_atoms.float()[None].to(d['atom_xyz_p1'].device), p=2)[0] # [Lb,Lb]
+        else:
+            diffusion_mask = mask_expand(self.diffusion_mask, 1)
+            Ca = xyz[~diffusion_mask, 1]
+            dgram = torch.cdist(Ca[None,...].contiguous(), substrate_atoms.float()[None], p=2)[0] # [Lb,Lb]
+
+        all_energies = []
+        for i, energy_fn in enumerate(self.energies):
+            energy = energy_fn(dgram)
+            all_energies.append(energy.sum())
+        energy = sum(all_energies)
+        print('NA CONTACT LOSS:',energy.item())
+        return - self.weight * energy
+
     
 class dmasif_interactions(Potential):
 
@@ -462,25 +596,46 @@ class dmasif_interactions(Potential):
         Differentiable way to optinize binding and non-binding surface
     '''
 
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, threshold=3, seq_model_type='ligand_mpnn'):
+    def __init__(self, binderlen, int_weight=1, non_int_weight=1, disable=False,
+                 pos_threshold=3, neg_threshold=3, seq_model_type='protein_mpnn', predicted=False):
+
+        super().__init__()
+
+        self.disable=disable
+        self.predicted=predicted # False seems to be better
+        self.sidechain=True
 
         submodule_path='/'.join(__file__.split('/')[:-4])
         import sys
         sys.path.append(submodule_path)
+       
+        from rfdiffusion.recover_sidechains import GetMartiniSidechains
 
-        from masif_martini.rfdiff_potential import Potential_from_bb
+        self.get_sidechains=GetMartiniSidechains(binderlen=binderlen, 
+                                                 seq_model_type=seq_model_type)
 
-        self.potential=Potential_from_bb(binderlen=binderlen, 
-                                          int_weight=int_weight, 
-                                          non_int_weight=non_int_weight, 
-                                          threshold=threshold, 
-                                          seq_model_type=seq_model_type)
+        from masif_martini.potential import dmasif_potential
+
+        self.potential=dmasif_potential(binderlen=binderlen, 
+                                        int_weight=int_weight, 
+                                        non_int_weight=non_int_weight, 
+                                        pos_threshold=pos_threshold, 
+                                        neg_threshold=neg_threshold)
 
         self.allatom=ComputeAllAtomCoords()
 
     def compute(self, xyz):
 
-        return self.potential(xyz.squeeze()).to('cpu')
+        d=self.get_sidechains(xyz, self.seq, self.mask_seq)
+
+        potential=self.potential(d)
+
+        if self.disable:
+            potential.detach_()
+            potential.requires_grad_()
+            xyz.grad=torch.zeros_like(xyz)
+                   
+        return - potential
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
@@ -492,8 +647,9 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'interface_ncontacts':  interface_ncontacts,
                            'monomer_contacts':     monomer_contacts,
                            'olig_contacts':        olig_contacts,
-                           'substrate_contacts':    substrate_contacts,
-                           'dmasif_interactions':   dmasif_interactions}
+                           'substrate_contacts':   substrate_contacts,
+                           'na_contacts':          na_contacts,
+                           'dmasif_interactions':  dmasif_interactions}
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',

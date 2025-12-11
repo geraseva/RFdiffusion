@@ -8,6 +8,10 @@ num2aa=[
     'SER','THR','TRP','TYR','VAL',
     'UNK','MAS',
     ]
+num2na=[
+    'DA','DC','DG','DT','DX',
+    'A','C','G','U','X',
+    ]
 
 # Mapping 3 letter AA to 1 letter AA (e.g. ALA to A)
 one_letter = ["A", "R", "N", "D", "C", \
@@ -16,6 +20,7 @@ one_letter = ["A", "R", "N", "D", "C", \
              "S", "T", "W", "Y", "V", "?", "-"]
 
 aa2num= {x:i for i,x in enumerate(num2aa)}
+na2num= {x:i for i,x in enumerate(num2na)}
 
 aa_321 = {a:b for a,b in zip(num2aa,one_letter)}
 aa_123 = {val:key for key,val in aa_321.items()}
@@ -50,6 +55,18 @@ aa2long=[
     (" N  "," CA "," C  "," O  "," CB "," CG1"," CG2",  None,  None,  None,  None,  None,  None,  None," H  "," HA "," HB ","1HG1","2HG1","3HG1","1HG2","2HG2","3HG2",  None,  None,  None,  None), # val
     (" N  "," CA "," C  "," O  "," CB ",  None,  None,  None,  None,  None,  None,  None,  None,  None," H  "," HA ","1HB ","2HB ","3HB ",  None,  None,  None,  None,  None,  None,  None,  None), # unk
     (" N  "," CA "," C  "," O  "," CB ",  None,  None,  None,  None,  None,  None,  None,  None,  None," H  "," HA ","1HB ","2HB ","3HB ",  None,  None,  None,  None,  None,  None,  None,  None), # mask
+]
+na2long=[
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," N9 "," C4 "," N3 "," C2 "," N1 "," C6 "," C5 "," N7 "," C8 "," N6 ",  None,  None,"H5''"," H5'"," H4'"," H3'","H2''"," H2'"," H1'"," H2 "," H61"," H62"," H8 ",  None,  None), #22  DA
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," N1 "," C2 "," O2 "," N3 "," C4 "," N4 "," C5 "," C6 ",  None,  None,  None,  None,"H5''"," H5'"," H4'"," H3'","H2''"," H2'"," H1'"," H42"," H41"," H5 "," H6 ",  None,  None), #23  DC
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," N9 "," C4 "," N3 "," C2 "," N1 "," C6 "," C5 "," N7 "," C8 "," N2 "," O6 ",  None,"H5''"," H5'"," H4'"," H3'","H2''"," H2'"," H1'"," H1 "," H22"," H21"," H8 ",  None,  None), #24  DG
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," N1 "," C2 "," O2 "," N3 "," C4 "," O4 "," C5 "," C7 "," C6 ",  None,  None,  None,"H5''"," H5'"," H4'"," H3'","H2''"," H2'"," H1'"," H3 "," H71"," H72"," H73"," H6 ",  None), #25  DT
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'",  None,  None,  None,  None,  None,  None,  None,  None,  None,  None,  None,  None,"H5''"," H5'"," H4'"," H3'","H2''"," H2'"," H1'",  None,  None,  None,  None,  None,  None), #26  DX (unk DNA)
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," O2'"," N1 "," C2 "," N3 "," C4 "," C5 "," C6 "," N6 "," N7 "," C8 "," N9 ",  None," H5'","H5''"," H4'"," H3'"," H2'","HO2'"," H1'"," H2 "," H61"," H62"," H8 ",  None,  None), #27   A
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," O2'"," N1 "," C2 "," O2 "," N3 "," C4 "," N4 "," C5 "," C6 ",  None,  None,  None," H5'","H5''"," H4'"," H3'"," H2'","HO2'"," H1'"," H42"," H41"," H5 "," H6 ",  None,  None), #28   C
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," O2'"," N1 "," C2 "," N2 "," N3 "," C4 "," C5 "," C6 "," O6 "," N7 "," C8 "," N9 "," H5'","H5''"," H4'"," H3'"," H2'","HO2'"," H1'"," H1 "," H22"," H21"," H8 ",  None,  None), #29   G
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," O2'"," N1 "," C2 "," O2 "," N3 "," C4 "," O4 "," C5 "," C6 ",  None,  None,  None," H5'","H5''"," H4'"," H3'"," H2'","HO2'"," H1'"," H3 "," H5 "," H6 ",  None,  None,  None), #30   U
+    (" O4'"," C1'"," C2'"," OP1"," P  "," OP2"," O5'"," C5'"," C4'"," C3'"," O3'"," O2'",  None,  None,  None,  None,  None,  None,  None,  None,  None,  None,  None," H5'","H5''"," H4'"," H3'"," H2'","HO2'"," H1'",  None,  None,  None,  None,  None,  None), #31  RX (unk RNA)
 ]
 
 # build the "alternate" sc mapping

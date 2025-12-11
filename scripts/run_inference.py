@@ -21,7 +21,7 @@ import torch
 from omegaconf import OmegaConf
 import hydra
 import logging
-from rfdiffusion.util import writepdb_multi, writepdb
+from rfdiffusion.util import writepdb_multi, writepdb, writeligand, writena
 from rfdiffusion.inference import utils as iu
 from hydra.core.hydra_config import HydraConfig
 import numpy as np
@@ -87,6 +87,8 @@ def main(conf: HydraConfig) -> None:
         px0_xyz_stack = []
         seq_stack = []
         plddt_stack = []
+        ligand_stack = []
+        na_stack = []
 
         x_t = torch.clone(x_init)
         seq_t = torch.clone(seq_init)
@@ -99,6 +101,13 @@ def main(conf: HydraConfig) -> None:
             denoised_xyz_stack.append(x_t)
             seq_stack.append(seq_t)
             plddt_stack.append(plddt[0])  # remove singleton leading dimension
+
+            if sampler.potential_conf.guiding_potentials is not None:
+                for pot in sampler.potential_manager.potentials_to_apply:
+                    if pot.current_substrate_atoms is not None:
+                        ligand_stack.append(pot.current_substrate_atoms)
+                    if pot.current_na_atoms is not None:
+                        na_stack.append(pot.current_na_atoms)
 
         # Flip order for better visualization in pymol
         denoised_xyz_stack = torch.stack(denoised_xyz_stack)
@@ -144,7 +153,15 @@ def main(conf: HydraConfig) -> None:
             bfacts=bfacts,
             idx_pdb=sampler.idx_pdb
         )
-
+        if len(ligand_stack)>0:
+            writeligand(f"{out_prefix}_ligand.pdb",
+                        ligand_stack[0],
+                        sampler.target_feats['info_het'],
+                        sampler._conf.potentials.substrate)
+        if len(na_stack)>0:
+            writena(f"{out_prefix}_na.pdb",
+                        na_stack[0],
+                        sampler.target_feats['na_info'])
         # run metadata
         trb = dict(
             config=OmegaConf.to_container(sampler._conf, resolve=True),
@@ -177,6 +194,14 @@ def main(conf: HydraConfig) -> None:
                 backbone_only=False,
                 chain_ids=sampler.chain_idx,
             )
+            '''
+            # ligand is fixed anyway
+            if len(ligand_stack)>0:
+                writeligandmulti(f"{traj_prefix}_ligand_traj.pdb",
+                        ligand_stack,
+                        sampler.target_feats['info_het'],
+                        sampler._conf.potentials.substrate)
+            '''
 
             out = f"{traj_prefix}_pX0_traj.pdb"
             writepdb_multi(
