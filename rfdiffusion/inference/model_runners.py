@@ -216,7 +216,6 @@ class Sampler:
                 print(f'WARNING: You are changing {override.split("=")[0]} from the value this model was trained with. Are you sure you know what you are doing?') 
                 mytype = type(self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]])
                 self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]] = mytype(override.split("=")[1])
-                print(override, self._conf[override.split(".")[0]][override.split(".")[1].split("=")[0]])
 
     def load_model(self):
         """Create RosettaFold model from preloaded checkpoint."""
