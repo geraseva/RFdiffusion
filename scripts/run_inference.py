@@ -142,6 +142,7 @@ def main(conf: HydraConfig) -> None:
             sampler.binderlen,
             chain_idx=sampler.chain_idx,
             bfacts=bfacts,
+            idx_pdb=sampler.idx_pdb
         )
 
         # run metadata
