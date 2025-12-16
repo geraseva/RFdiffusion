@@ -589,53 +589,6 @@ class na_contacts(substrate_contacts):
         print('NA CONTACT LOSS:',energy.item())
         return - self.weight * energy
 
-    
-class dmasif_interactions(Potential):
-
-    '''
-        Differentiable way to optinize binding and non-binding surface
-    '''
-
-    def __init__(self, binderlen, int_weight=1, non_int_weight=1, disable=False,
-                 pos_threshold=3, neg_threshold=3, seq_model_type='protein_mpnn', predicted=False):
-
-        super().__init__()
-
-        self.disable=disable
-        self.predicted=predicted # False seems to be better
-        self.sidechain=True
-
-        submodule_path='/'.join(__file__.split('/')[:-4])
-        import sys
-        sys.path.append(submodule_path)
-       
-        from rfdiffusion.recover_sidechains import GetMartiniSidechains
-
-        self.get_sidechains=GetMartiniSidechains(binderlen=binderlen, 
-                                                 seq_model_type=seq_model_type)
-
-        from masif_martini.potential import dmasif_potential
-
-        self.potential=dmasif_potential(binderlen=binderlen, 
-                                        int_weight=int_weight, 
-                                        non_int_weight=non_int_weight, 
-                                        pos_threshold=pos_threshold, 
-                                        neg_threshold=neg_threshold)
-
-        self.allatom=ComputeAllAtomCoords()
-
-    def compute(self, xyz):
-
-        d=self.get_sidechains(xyz, self.seq, self.mask_seq)
-
-        potential=self.potential(d)
-
-        if self.disable:
-            potential.detach_()
-            potential.requires_grad_()
-            xyz.grad=torch.zeros_like(xyz)
-                   
-        return - potential
 
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
@@ -649,13 +602,12 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'olig_contacts':        olig_contacts,
                            'substrate_contacts':   substrate_contacts,
                            'na_contacts':          na_contacts,
-                           'dmasif_interactions':  dmasif_interactions}
+                           }
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',
                            'binder_any_ReLU',
                            'dimer_ROG',
                            'binder_ncontacts',
-                           'interface_ncontacts',
-                           'dmasif_interactions'}
+                           'interface_ncontacts'}
 
