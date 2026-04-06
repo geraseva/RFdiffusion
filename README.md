@@ -9,7 +9,7 @@ This is a fork of [RFDiffusion](https://github.com/RosettaCommons/RFdiffusion) m
 
 2. **Rigid-body averaging** — potentials computed per residue can now be averaged across the protein chain and applied as collective impulses for translation and rotation of the entire chain as a rigid body.
 
-3. **Extrapolated coordinates for potential calculation** — instead of computing potentials on the noisy intermediate structure (`xt`), potentials are evaluated on `px0` (the extrapolated clean structure used for self-conditioning). Since `px0` is closer to the final structure, this provides more accurate ligand/NA interaction estimates.
+3. **Px0-based potential calculation** — instead of computing potentials on the noisy intermediate structure (`xt`), potentials are evaluated on `px0` (the extrapolated structure used for self-conditioning). Since `px0` is closer to a natural structure, this provides more accurate protein-NA interaction estimates.
 
 ## Usage
 
